@@ -1,0 +1,26 @@
+[project]
+name = "hindsight-machine"
+version = "0.1.0"
+description = "A small lab for testing how well podcast predictions survive contact with reality."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.4.0",
+    "pydantic>=2.11.0",
+    "pydantic-settings>=2.10.0",
+    "rich>=14.1.0",
+    "typer>=0.16.0",
+]
+
+[project.scripts]
+hindsight-machine = "hindsight_machine.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hindsight_machine"]
