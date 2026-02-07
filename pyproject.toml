@@ -1,5 +1,5 @@
 [project]
-name = "hindsight-machine"
+name = "proof-please"
 version = "0.1.0"
 description = "A small lab for testing how well podcast predictions survive contact with reality."
 readme = "README.md"
@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-hindsight-machine = "hindsight_machine.cli:main"
+proof-please = "proof_please.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -23,4 +23,4 @@ build-backend = "hatchling.build"
 package = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/hindsight_machine"]
+packages = ["src/proof_please"]

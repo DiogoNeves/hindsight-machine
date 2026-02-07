@@ -1,4 +1,4 @@
-# hindsight-machine
+# Proof, Please
 A small lab for testing how well podcast predictions survive contact with reality.
 
 ## Setup

@@ -7,10 +7,10 @@ sync:
     uv sync
 
 run *args:
-    uv run hindsight-machine {{args}}
+    uv run proof-please {{args}}
 
 init-db:
-    uv run hindsight-machine init-db
+    uv run proof-please init-db
 
 prototype transcript:
     uv run python scripts/prototype_extract_predictions.py {{transcript}}

@@ -1,12 +1,12 @@
-"""CLI entrypoints for hindsight-machine."""
+"""CLI entrypoints for proof-please."""
 
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
-from hindsight_machine.config import AppConfig
-from hindsight_machine.db import get_connection, init_schema
+from proof_please.config import AppConfig
+from proof_please.db import get_connection, init_schema
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()

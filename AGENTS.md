@@ -1,26 +1,26 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Core package code lives in `src/hindsight_machine/`:
+Core package code lives in `src/proof_please/`:
 - `cli.py` contains Typer commands (`config`, `init-db`, `prototype`).
 - `config.py` defines runtime settings via `pydantic-settings`.
 - `db.py` manages DuckDB connection and schema bootstrap.
 - `models.py` holds domain models (for example, `Prediction`).
 
-Utility experiments live in `scripts/` (currently `prototype_extract_predictions.py`). Runtime artifacts are stored in `data/` (default DB path: `data/hindsight.duckdb`).
+Utility experiments live in `scripts/` (currently `prototype_extract_predictions.py`). Runtime artifacts are stored in `data/` (default DB path: `data/proof_please.duckdb`).
 
 ## Build, Test, and Development Commands
 - `uv sync` or `just sync`: install and lock project dependencies.
 - `just run config`: print active app configuration.
 - `just init-db`: create/update the local DuckDB schema.
 - `just prototype path/to/transcript.txt`: run prototype extractor scaffold.
-- `uv run hindsight-machine --help`: view all CLI commands.
+- `uv run proof-please --help`: view all CLI commands.
 
 ## Coding Style & Naming Conventions
 Use Python 3.11+ conventions with 4-space indentation and explicit type hints on public functions. Keep modules focused and small, and follow existing naming patterns:
 - modules/functions: `snake_case`
 - classes: `PascalCase`
-- constants/env vars: `UPPER_SNAKE_CASE` (for example `HM_DUCKDB_PATH`)
+- constants/env vars: `UPPER_SNAKE_CASE` (for example `PP_DUCKDB_PATH`)
 
 Prefer concise docstrings (current codebase uses them consistently) and avoid adding new dependencies unless required.
 
@@ -42,4 +42,4 @@ For PRs, include:
 - sample CLI output when user-visible behavior changes
 
 ## Configuration & Data Notes
-Settings load from environment and `.env` with prefix `HM_`. Keep local database files in `data/` and do not commit generated DB contents.
+Settings load from environment and `.env` with prefix `PP_`. Keep local database files in `data/` and do not commit generated DB contents.
