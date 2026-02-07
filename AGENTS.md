@@ -27,6 +27,11 @@ Prefer concise docstrings (current codebase uses them consistently) and avoid ad
 ## Testing Guidelines
 There is no committed test suite yet. For new features, add `pytest` tests under `tests/` mirroring the source layout (for example `tests/test_db.py`). Focus first on deterministic logic in `db.py`, `config.py`, and CLI argument validation. Run tests with `uv run pytest` once tests are present.
 
+## Iterative Development Expectations
+This project is experimental, so build in small, reversible steps and adapt as the problem becomes clearer. Do not invent roadmap details or assume future requirements; document unknowns explicitly.
+
+When collaborating (human or AI), ask clarifying questions when requirements are ambiguous. Work from a Staff Engineer perspective: explain tradeoffs, suggest pragmatic alternatives, and prioritize solutions that keep learning velocity high.
+
 ## Commit & Pull Request Guidelines
 Current history is minimal (`Initial commit`), so keep commit messages short, imperative, and descriptive (for example `Add DuckDB schema migration guard`).
 
