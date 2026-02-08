@@ -1,0 +1,4 @@
+interface:
+  display_name: "Get Transcript from URL"
+  short_description: "Fetch web transcript pages into normalized JSON"
+  default_prompt: "Use $get-transcript-from-url to fetch transcript text from this URL and save normalized JSON metadata + raw text."

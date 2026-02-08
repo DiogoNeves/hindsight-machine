@@ -11,6 +11,7 @@ Utility experiments live in `scripts/` (currently `prototype_extract_health_clai
 
 ## Build, Test, and Development Commands
 - `uv sync` or `just sync`: install and lock project dependencies.
+- `uv add <package>`: add new dependencies and update the lockfile.
 - `just run config`: print active app configuration.
 - `just init-db`: create/update the local DuckDB schema.
 - `just extract-claims path/to/transcript.txt`: run health-claim extractor scaffold.

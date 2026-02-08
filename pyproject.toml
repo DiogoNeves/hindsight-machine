@@ -5,9 +5,11 @@ description = "An experimental lab for extracting and evaluating health claims f
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "beautifulsoup4>=4.13.0",
     "duckdb>=1.4.0",
     "pydantic>=2.11.0",
     "pydantic-settings>=2.10.0",
+    "requests>=2.32.0",
     "rich>=14.1.0",
     "typer>=0.16.0",
 ]
