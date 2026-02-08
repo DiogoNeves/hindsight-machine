@@ -16,8 +16,14 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 
-TIMESTAMP_RE = re.compile(r"\[(?:\d{1,2}:)?\d{1,2}:\d{2}\]")
+TIMESTAMP_RE = re.compile(r"(?:\[\s*|\(\s*)?(?:\d{1,2}:)?\d{1,2}:\d{2}(?:\s*\]|\s*\))?")
 WHITESPACE_RE = re.compile(r"\s+")
+SPEAKER_TIMESTAMP_LINE_RE = re.compile(
+    r"^[^:\n]{1,80}:\s*(?:\[\s*|\(\s*)?(?:\d{1,2}:)?\d{1,2}:\d{2}(?:\s*\]|\s*\))?(?:\s|$)"
+)
+TIMESTAMP_ONLY_LINE_RE = re.compile(
+    r"^(?:\[\s*|\(\s*)?(?:\d{1,2}:)?\d{1,2}:\d{2}(?:\s*\]|\s*\))?$"
+)
 
 NOISE_EXACT = {
     "skip to content",
@@ -57,6 +63,30 @@ REMOVAL_SELECTORS = (
     "#comments",
     ".social-share",
     ".share-buttons",
+)
+
+TAIL_CUTOFF_MARKERS = (
+    "we use cookies to improve your experience",
+    "privacy and cookie policy",
+    "terms of use",
+    "copyright",
+    "member dashboard",
+    "discussion forum",
+    "hero discounts",
+    "download the app",
+    "join our newsletter",
+    "open live chat",
+)
+
+TAIL_CUTOFF_EXACT_LINES = (
+    "explore",
+    "mobility challenges",
+    "live q&as with kelly",
+    "upcoming events",
+    "pain protocols",
+    "professional courses",
+    "mobility gear",
+    "join our newsletter",
 )
 
 CANDIDATE_SELECTORS = (
@@ -506,6 +536,60 @@ def extract_transcript_text(soup: BeautifulSoup, selector: str | None) -> str:
     return best_text
 
 
+def find_timestamp_line_indexes(lines: list[str]) -> list[int]:
+    return [idx for idx, line in enumerate(lines) if TIMESTAMP_RE.search(line)]
+
+
+def find_transcript_start(lines: list[str], timestamp_indexes: list[int]) -> int | None:
+    if len(timestamp_indexes) < 3:
+        return None
+
+    for idx in timestamp_indexes:
+        if SPEAKER_TIMESTAMP_LINE_RE.search(lines[idx]):
+            return idx
+
+    for idx in timestamp_indexes:
+        if TIMESTAMP_ONLY_LINE_RE.search(lines[idx]):
+            return idx
+
+    return timestamp_indexes[0]
+
+
+def find_transcript_end(lines: list[str], timestamp_indexes: list[int]) -> int | None:
+    if not timestamp_indexes:
+        return None
+
+    last_timestamp_idx = timestamp_indexes[-1]
+    for idx in range(last_timestamp_idx + 1, len(lines)):
+        lowered = lines[idx].lower()
+        if lowered in TAIL_CUTOFF_EXACT_LINES:
+            return idx
+        if any(marker in lowered for marker in TAIL_CUTOFF_MARKERS):
+            return idx
+
+    return None
+
+
+def trim_transcript_noise(text: str) -> str:
+    lines = [normalize_line(line) for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return text
+
+    timestamp_indexes = find_timestamp_line_indexes(lines)
+
+    start_idx = find_transcript_start(lines, timestamp_indexes)
+    if start_idx is not None and start_idx > 0:
+        lines = lines[start_idx:]
+        timestamp_indexes = [idx - start_idx for idx in timestamp_indexes if idx >= start_idx]
+
+    end_idx = find_transcript_end(lines, timestamp_indexes)
+    if end_idx is not None:
+        lines = lines[:end_idx]
+
+    return "\n\n".join(lines)
+
+
 def build_output_path(
     *,
     output_dir: Path,
@@ -592,6 +676,7 @@ def main() -> int:
         )
 
         transcript_text = extract_transcript_text(soup, args.selector)
+        transcript_text = trim_transcript_noise(transcript_text)
     except TranscriptExtractionError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

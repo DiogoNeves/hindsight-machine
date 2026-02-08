@@ -85,4 +85,5 @@ Use filename pattern:
 ## Notes
 - Keep raw text faithful to page transcript content; avoid summarization.
 - Prefer automatic metadata extraction first, then apply explicit overrides for correctness.
+- The extractor trims common page chrome by detecting timestamped dialogue starts and known footer/nav markers.
 - Normalize names to URL-safe lowercase slugs in the output filename.
