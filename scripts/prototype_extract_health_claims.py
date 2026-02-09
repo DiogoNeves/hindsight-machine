@@ -17,6 +17,7 @@ console = Console()
 
 DEFAULT_INPUT = Path("data/transcripts/norm/web__the-ready-state__layne-norton__2022-10-20__v1.json")
 DEFAULT_OUTPUT = Path("data/claims.jsonl")
+DEFAULT_QUERIES_OUTPUT = Path("data/claim_queries.jsonl")
 DEFAULT_MODELS = "gpt-oss:20b,qwen3:4b"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 
@@ -253,6 +254,297 @@ def dedupe_and_assign_claim_ids(rows: list[dict[str, Any]]) -> list[dict[str, An
     return final_rows
 
 
+def load_claims_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Load claims from JSONL."""
+    claims: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            row = json.loads(stripped)
+            if isinstance(row, dict):
+                claims.append(row)
+    return claims
+
+
+def build_claims_block(claims: list[dict[str, Any]]) -> str:
+    """Render claim rows for query-generation prompt."""
+    lines: list[str] = []
+    for claim in claims:
+        claim_id = str(claim.get("claim_id", "")).strip()
+        claim_type = str(claim.get("claim_type", "")).strip()
+        claim_text = re.sub(r"\s+", " ", str(claim.get("claim_text", "")).strip())
+        if not claim_id or not claim_text:
+            continue
+        lines.append(f"{claim_id} | {claim_type} | {claim_text}")
+    return "\n".join(lines)
+
+
+def build_query_prompt(claims_block: str, chunk_label: str) -> list[dict[str, str]]:
+    """Prompt to generate literature-search queries for validating claims."""
+    system = (
+        "You generate literature-search queries to validate health claims. "
+        "Every `query` must be a single question about scientific consensus for a claim "
+        "or a small set of similar claims. "
+        "Return JSON only with this shape: "
+        '{"queries":[{"claim_id":"clm_000001","query":"...","why_this_query":"...",'
+        '"preferred_sources":["systematic review","meta-analysis","guideline"]}]}.'
+    )
+    user = (
+        f"Chunk: {chunk_label}\n\n"
+        "Task:\n"
+        "1) Given the claims below, generate as many high-value validation queries as possible.\n"
+        "2) You may merge very similar claims into one query and use one representative claim_id.\n"
+        "3) Write each query as a consensus question, e.g. "
+        "\"What is the current scientific consensus on whether LDL cholesterol is an "
+        "independent risk factor for heart disease?\"\n"
+        "4) Keep queries concise and optimized for evidence retrieval.\n"
+        "5) Do not append source types inside `query`; keep source types only in "
+        "`preferred_sources`.\n"
+        "6) Prefer source types like systematic review, meta-analysis, guideline, "
+        "mendelian randomisation, RCT.\n"
+        "7) Return JSON only.\n\n"
+        "Claims:\n"
+        f"{claims_block}\n"
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def normalize_query_rows(
+    raw_queries: list[dict[str, Any]],
+    valid_claim_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Normalize model query rows into the expected JSONL schema."""
+    rows: list[dict[str, Any]] = []
+    for row in raw_queries:
+        if not isinstance(row, dict):
+            continue
+        claim_id = str(row.get("claim_id", "")).strip()
+        query = re.sub(r"\s+", " ", str(row.get("query", "")).strip())
+        why_this_query = re.sub(r"\s+", " ", str(row.get("why_this_query", "")).strip())
+        preferred_sources = row.get("preferred_sources", [])
+        if query and "?" not in query:
+            normalized_query = query.rstrip(" .")
+            query = f"What is the current scientific consensus on {normalized_query}?"
+        if claim_id not in valid_claim_ids:
+            continue
+        if not query or not why_this_query:
+            continue
+        if not isinstance(preferred_sources, list):
+            preferred_sources = []
+        normalized_sources = [
+            re.sub(r"\s+", " ", str(item).strip())
+            for item in preferred_sources
+            if str(item).strip()
+        ]
+        if not normalized_sources:
+            normalized_sources = ["systematic review", "meta-analysis", "guideline"]
+        rows.append(
+            {
+                "claim_id": claim_id,
+                "query": query,
+                "why_this_query": why_this_query,
+                "preferred_sources": normalized_sources,
+            }
+        )
+    return rows
+
+
+def _query_dedupe_key(row: dict[str, Any]) -> str:
+    return re.sub(r"\W+", " ", str(row.get("query", "")).lower()).strip()
+
+
+def dedupe_queries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate query rows by normalized query text."""
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        key = _query_dedupe_key(row)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return unique
+
+
+def _sources_for_claim_type(claim_type: str) -> list[str]:
+    if claim_type == "medical_risk":
+        return ["systematic review", "meta-analysis", "guideline", "mendelian randomisation"]
+    if claim_type == "treatment_effect":
+        return ["systematic review", "meta-analysis", "RCT", "guideline"]
+    if claim_type == "nutrition_claim":
+        return ["systematic review", "meta-analysis", "RCT", "guideline"]
+    if claim_type == "exercise_claim":
+        return ["systematic review", "meta-analysis", "RCT", "guideline"]
+    if claim_type == "epidemiology":
+        return ["systematic review", "meta-analysis", "cohort study", "guideline"]
+    return ["systematic review", "meta-analysis", "guideline"]
+
+
+def _clean_query_terms(claim_text: str, max_terms: int = 12) -> str:
+    stop = {
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "to",
+        "of",
+        "and",
+        "or",
+        "in",
+        "for",
+        "on",
+        "with",
+        "that",
+        "this",
+        "it",
+        "as",
+        "by",
+        "be",
+        "from",
+        "at",
+        "about",
+        "can",
+        "could",
+    }
+    tokens = re.findall(r"[a-zA-Z0-9%\-]+", claim_text.lower())
+    filtered = [tok for tok in tokens if tok not in stop]
+    if not filtered:
+        filtered = tokens
+    return " ".join(filtered[:max_terms])
+
+
+def _claim_tokens(claim_text: str, max_terms: int = 14) -> set[str]:
+    cleaned = _clean_query_terms(claim_text, max_terms=max_terms)
+    return {tok for tok in cleaned.split() if tok}
+
+
+def _jaccard_similarity(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def generate_heuristic_queries(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fallback query generation for claims not covered by LLM output."""
+    rows: list[dict[str, Any]] = []
+    existing_token_groups: list[set[str]] = []
+    for claim in claims:
+        claim_id = str(claim.get("claim_id", "")).strip()
+        claim_text = str(claim.get("claim_text", "")).strip()
+        claim_type = str(claim.get("claim_type", "other")).strip() or "other"
+        if not claim_id or not claim_text:
+            continue
+        tokens = _claim_tokens(claim_text)
+        if any(_jaccard_similarity(tokens, group) >= 0.72 for group in existing_token_groups):
+            continue
+        existing_token_groups.append(tokens)
+        source_types = _sources_for_claim_type(claim_type)
+        query = f"What is the current scientific consensus on the claim that {claim_text}?"
+        rows.append(
+            {
+                "claim_id": claim_id,
+                "query": query,
+                "why_this_query": (
+                    "Fallback query for claim validation using high-evidence source types "
+                    "matched to claim category."
+                ),
+                "preferred_sources": source_types,
+            }
+        )
+    return rows
+
+
+def choose_query_model(
+    query_model: str | None,
+    model_list: list[str],
+    available_models: list[str],
+) -> str | None:
+    """Resolve which model to use for query generation."""
+    if query_model:
+        return query_model
+    for model in model_list:
+        if model in available_models:
+            return model
+    if available_models:
+        return available_models[0]
+    return None
+
+
+def generate_validation_queries(
+    claims: list[dict[str, Any]],
+    config: OllamaConfig,
+    query_model: str,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> list[dict[str, Any]]:
+    """Generate deduplicated validation queries from extracted claims."""
+    valid_claim_ids = {
+        str(claim.get("claim_id", "")).strip()
+        for claim in claims
+        if str(claim.get("claim_id", "")).strip()
+    }
+    if not valid_claim_ids:
+        return []
+
+    chunks = build_chunks(claims, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    query_rows_raw: list[dict[str, Any]] = []
+
+    for chunk_index, chunk in enumerate(chunks, start=1):
+        claims_block = build_claims_block(chunk)
+        if not claims_block:
+            continue
+        messages = build_query_prompt(claims_block, chunk_label=f"{chunk_index}/{len(chunks)}")
+        try:
+            response_text = ollama_chat(config=config, model=query_model, messages=messages)
+        except Exception as exc:  # noqa: BLE001 - prototype tolerance
+            console.print(
+                f"[red]Query generation failed for chunk {chunk_index}/{len(chunks)}: {exc}[/red]"
+            )
+            continue
+
+        try:
+            payload = _extract_json_object(response_text)
+        except ValueError as exc:
+            console.print(
+                f"[red]Invalid query JSON for chunk {chunk_index}/{len(chunks)}: {exc}[/red]"
+            )
+            continue
+
+        raw_queries = payload.get("queries", [])
+        if not isinstance(raw_queries, list):
+            continue
+        normalized = normalize_query_rows(raw_queries, valid_claim_ids=valid_claim_ids)
+        query_rows_raw.extend(normalized)
+        console.print(
+            f"[green]{query_model} query chunk {chunk_index}/{len(chunks)}: "
+            f"{len(normalized)} queries[/green]"
+        )
+
+    deduped_llm_queries = dedupe_queries(query_rows_raw)
+    covered_claim_ids = {row["claim_id"] for row in deduped_llm_queries}
+    missing_claims = [
+        claim
+        for claim in claims
+        if str(claim.get("claim_id", "")).strip()
+        and str(claim.get("claim_id", "")).strip() not in covered_claim_ids
+    ]
+    if missing_claims:
+        console.print(
+            f"[yellow]Adding fallback queries for {len(missing_claims)} uncovered claims.[/yellow]"
+        )
+        deduped_llm_queries.extend(generate_heuristic_queries(missing_claims))
+
+    return dedupe_queries(deduped_llm_queries)
+
+
 def normalize_claims(
     doc_id: str,
     model: str,
@@ -331,10 +623,25 @@ def main(
         "--output",
         help="Output JSONL file path.",
     ),
+    queries_output: Path = typer.Option(
+        DEFAULT_QUERIES_OUTPUT,
+        "--queries-output",
+        help="Output JSONL file for validation queries.",
+    ),
     models: str = typer.Option(
         DEFAULT_MODELS,
         "--models",
         help="Comma-separated Ollama model names to run for comparison.",
+    ),
+    query_model: str | None = typer.Option(
+        None,
+        "--query-model",
+        help="Model for query generation (default: first available model from --models).",
+    ),
+    claims_input: Path | None = typer.Option(
+        None,
+        "--claims-input",
+        help="Existing claims JSONL to use as query input (skip extraction).",
     ),
     ollama_url: str = typer.Option(
         DEFAULT_OLLAMA_URL,
@@ -361,6 +668,21 @@ def main(
         "--chunk-overlap",
         help="Segment overlap between adjacent chunks.",
     ),
+    generate_queries: bool = typer.Option(
+        True,
+        "--generate-queries/--no-generate-queries",
+        help="Generate validation queries from extracted claims.",
+    ),
+    query_chunk_size: int = typer.Option(
+        25,
+        "--query-chunk-size",
+        help="Claims per query-generation model call.",
+    ),
+    query_chunk_overlap: int = typer.Option(
+        5,
+        "--query-chunk-overlap",
+        help="Claims overlap between query-generation chunks.",
+    ),
     list_models_only: bool = typer.Option(
         False,
         "--list-models",
@@ -383,9 +705,17 @@ def main(
         raise typer.BadParameter("--chunk-overlap must be >= 0")
     if chunk_overlap >= chunk_size:
         raise typer.BadParameter("--chunk-overlap must be smaller than --chunk-size")
+    if query_chunk_size <= 0:
+        raise typer.BadParameter("--query-chunk-size must be > 0")
+    if query_chunk_overlap < 0:
+        raise typer.BadParameter("--query-chunk-overlap must be >= 0")
+    if query_chunk_overlap >= query_chunk_size:
+        raise typer.BadParameter("--query-chunk-overlap must be smaller than --query-chunk-size")
+    if claims_input is not None and not claims_input.exists():
+        raise typer.BadParameter(f"--claims-input path does not exist: {claims_input}")
 
     model_list = [model.strip() for model in models.split(",") if model.strip()]
-    if not model_list:
+    if not model_list and claims_input is None:
         raise typer.BadParameter("No models provided.")
 
     config = OllamaConfig(base_url=ollama_url, timeout=timeout)
@@ -407,82 +737,121 @@ def main(
     if list_models_only:
         return
 
-    doc_id, segments = load_transcript(transcript)
-    if max_segments > 0:
-        segments = segments[:max_segments]
-    chunks = build_chunks(segments, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    start_time_by_seg_id = {
-        str(segment.get("seg_id", "")).strip(): int(segment.get("start_time_s", 0))
-        for segment in segments
-        if str(segment.get("seg_id", "")).strip()
-    }
+    all_rows: list[dict[str, Any]]
+    if claims_input is not None:
+        all_rows = load_claims_jsonl(claims_input)
+        console.print(f"[green]Loaded {len(all_rows)} claims from {claims_input}[/green]")
+    else:
+        doc_id, segments = load_transcript(transcript)
+        if max_segments > 0:
+            segments = segments[:max_segments]
+        chunks = build_chunks(segments, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        start_time_by_seg_id = {
+            str(segment.get("seg_id", "")).strip(): int(segment.get("start_time_s", 0))
+            for segment in segments
+            if str(segment.get("seg_id", "")).strip()
+        }
 
-    all_rows_raw: list[dict[str, Any]] = []
+        all_rows_raw: list[dict[str, Any]] = []
 
-    for model in model_list:
-        console.print(f"[cyan]Running extraction with model:[/cyan] {model}")
-        model_rows: list[dict[str, Any]] = []
-        for chunk_index, chunk in enumerate(chunks, start=1):
-            segment_block = build_segment_block(chunk, max_segments=len(chunk))
-            messages = build_prompt(
-                doc_id,
-                segment_block,
-                chunk_label=f"{chunk_index}/{len(chunks)}",
-            )
-            try:
-                response_text = ollama_chat(config=config, model=model, messages=messages)
-            except urllib.error.URLError as exc:
-                console.print(
-                    f"[red]Failed request for model {model}, chunk {chunk_index}: {exc}[/red]"
+        for model in model_list:
+            console.print(f"[cyan]Running extraction with model:[/cyan] {model}")
+            model_rows: list[dict[str, Any]] = []
+            for chunk_index, chunk in enumerate(chunks, start=1):
+                segment_block = build_segment_block(chunk, max_segments=len(chunk))
+                messages = build_prompt(
+                    doc_id,
+                    segment_block,
+                    chunk_label=f"{chunk_index}/{len(chunks)}",
                 )
-                continue
-            except Exception as exc:  # noqa: BLE001 - keep prototype error handling simple
-                console.print(f"[red]Model {model}, chunk {chunk_index} failed: {exc}[/red]")
-                continue
+                try:
+                    response_text = ollama_chat(config=config, model=model, messages=messages)
+                except urllib.error.URLError as exc:
+                    console.print(
+                        f"[red]Failed request for model {model}, chunk {chunk_index}: {exc}[/red]"
+                    )
+                    continue
+                except Exception as exc:  # noqa: BLE001 - keep prototype error handling simple
+                    console.print(f"[red]Model {model}, chunk {chunk_index} failed: {exc}[/red]")
+                    continue
 
-            try:
-                payload = _extract_json_object(response_text)
-            except ValueError as exc:
-                console.print(
-                    f"[red]Could not parse JSON response for {model}, chunk {chunk_index}: {exc}[/red]"
+                try:
+                    payload = _extract_json_object(response_text)
+                except ValueError as exc:
+                    console.print(
+                        f"[red]Could not parse JSON response for {model}, chunk {chunk_index}: {exc}[/red]"
+                    )
+                    continue
+
+                claims = payload.get("claims", [])
+                if not isinstance(claims, list):
+                    console.print(
+                        f"[yellow]Model {model}, chunk {chunk_index} returned no claims list.[/yellow]"
+                    )
+                    continue
+
+                normalized_rows = normalize_claims(
+                    doc_id=doc_id,
+                    model=model,
+                    raw_claims=claims,
+                    start_time_by_seg_id=start_time_by_seg_id,
                 )
-                continue
-
-            claims = payload.get("claims", [])
-            if not isinstance(claims, list):
+                model_rows.extend(normalized_rows)
                 console.print(
-                    f"[yellow]Model {model}, chunk {chunk_index} returned no claims list.[/yellow]"
+                    f"[green]{model} chunk {chunk_index}/{len(chunks)}: "
+                    f"{len(normalized_rows)} claims[/green]"
                 )
-                continue
 
-            normalized_rows = normalize_claims(
-                doc_id=doc_id,
-                model=model,
-                raw_claims=claims,
-                start_time_by_seg_id=start_time_by_seg_id,
-            )
-            model_rows.extend(normalized_rows)
+            deduped_model_rows = dedupe_and_assign_claim_ids(model_rows)
+            all_rows_raw.extend(deduped_model_rows)
             console.print(
-                f"[green]{model} chunk {chunk_index}/{len(chunks)}: "
-                f"{len(normalized_rows)} claims[/green]"
+                f"[green]Model {model} produced {len(deduped_model_rows)} unique claims "
+                f"across {len(chunks)} chunks.[/green]"
             )
 
-        deduped_model_rows = dedupe_and_assign_claim_ids(model_rows)
-        all_rows_raw.extend(deduped_model_rows)
-        console.print(
-            f"[green]Model {model} produced {len(deduped_model_rows)} unique claims "
-            f"across {len(chunks)} chunks.[/green]"
-        )
+        all_rows = dedupe_and_assign_claim_ids(all_rows_raw)
+        write_jsonl(output, all_rows)
+        console.print(f"[bold green]Wrote {len(all_rows)} claims to {output}[/bold green]")
 
-    all_rows = dedupe_and_assign_claim_ids(all_rows_raw)
-    write_jsonl(output, all_rows)
-    console.print(f"[bold green]Wrote {len(all_rows)} claims to {output}[/bold green]")
     if list_claims:
         console.print("[bold]Extracted claims[/bold]:")
         for row in all_rows:
             console.print(
-                f"{row['claim_id']} | {row['model']} | {row['speaker']} | "
-                f"{row['claim_type']} | {row['claim_text']}"
+                f"{row.get('claim_id', 'unknown')} | {row.get('model', 'unknown')} | "
+                f"{row.get('speaker', 'unknown')} | {row.get('claim_type', 'unknown')} | "
+                f"{row.get('claim_text', '')}"
+            )
+
+    if generate_queries:
+        selected_query_model = choose_query_model(
+            query_model=query_model,
+            model_list=model_list,
+            available_models=available_models,
+        )
+        if selected_query_model is None:
+            console.print(
+                "[yellow]Skipping query generation: no model available. "
+                "Use --query-model or install a local Ollama model.[/yellow]"
+            )
+            return
+
+        console.print(f"[cyan]Generating validation queries with:[/cyan] {selected_query_model}")
+        query_rows = generate_validation_queries(
+            claims=all_rows,
+            config=config,
+            query_model=selected_query_model,
+            chunk_size=query_chunk_size,
+            chunk_overlap=query_chunk_overlap,
+        )
+        write_jsonl(queries_output, query_rows)
+        console.print(
+            f"[bold green]Wrote {len(query_rows)} validation queries to {queries_output}[/bold green]"
+        )
+        console.print("[bold]Validation queries[/bold]:")
+        for row in query_rows:
+            console.print(
+                f"{row['claim_id']} | {row['query']} | {row['why_this_query']} | "
+                f"{', '.join(row['preferred_sources'])}"
             )
 
 
