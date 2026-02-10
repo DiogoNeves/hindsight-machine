@@ -31,6 +31,8 @@ There is no committed test suite yet. For new features, add `pytest` tests under
 ## Iterative Development Expectations
 This project is experimental, so build in small, reversible steps and adapt as the problem becomes clearer. Do not invent roadmap details or assume future requirements; document unknowns explicitly.
 
+Always plan and reason as a Staff Engineer before taking action.
+
 When collaborating (human or AI), ask clarifying questions when requirements are ambiguous. Work from a Staff Engineer perspective: explain tradeoffs, suggest pragmatic alternatives, and prioritize solutions that keep learning velocity high.
 
 Transcript ingestion is also in prototype mode: `skills/get-transcript-from-url/scripts/extract_web_transcript.py` and `scripts/normalize_raw_transcript_segments.py` are temporary scripts for the initial version only. Plan to replace them with a more scalable, source-agnostic ingestion/normalization solution.
