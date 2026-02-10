@@ -22,20 +22,11 @@ uv run python scripts/prototype_extract_health_claims.py --help
 
 Available commands:
 
-1. `list-models`
-2. `extract-claims`
-3. `generate-queries`
-4. `run-pipeline`
+1. `extract-claims`
+2. `generate-queries`
+3. `run-pipeline`
 
 ## Command Details
-
-### list-models
-
-Lists installed Ollama models from `/api/tags`.
-
-```bash
-uv run python scripts/prototype_extract_health_claims.py list-models
-```
 
 ### extract-claims
 

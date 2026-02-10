@@ -718,15 +718,6 @@ def _fetch_available_models(config: OllamaConfig) -> list[str]:
         ) from exc
 
 
-def _print_installed_models(available_models: list[str]) -> None:
-    if available_models:
-        console.print("[bold]Installed Ollama models[/bold]:")
-        for model_name in available_models:
-            console.print(f"  - {model_name}")
-        return
-    console.print("[yellow]No models returned by /api/tags.[/yellow]")
-
-
 def _warn_missing_models(requested_models: list[str], available_models: list[str]) -> None:
     missing = [name for name in requested_models if name not in available_models]
     if missing:
@@ -871,26 +862,6 @@ def run_query_generation(
 app = typer.Typer(help="Prototype commands for extracting health claims and validation queries.")
 
 
-@app.command("list-models")
-def list_models_command(
-    ollama_url: str = typer.Option(
-        DEFAULT_OLLAMA_URL,
-        "--ollama-url",
-        help="Ollama base URL.",
-    ),
-    timeout: float = typer.Option(
-        180.0,
-        "--timeout",
-        help="Ollama request timeout in seconds.",
-    ),
-) -> None:
-    """List installed local Ollama models."""
-    _validate_common_args(timeout=timeout, max_segments=0)
-    config = OllamaConfig(base_url=ollama_url, timeout=timeout)
-    available_models = _fetch_available_models(config)
-    _print_installed_models(available_models)
-
-
 @app.command("extract-claims")
 def extract_claims_command(
     transcript: Path = typer.Option(
@@ -945,7 +916,6 @@ def extract_claims_command(
         raise typer.BadParameter("No models provided.")
     config = OllamaConfig(base_url=ollama_url, timeout=timeout)
     available_models = _fetch_available_models(config)
-    _print_installed_models(available_models)
     _warn_missing_models(model_list, available_models)
 
     all_rows = run_claim_extraction(
@@ -1017,7 +987,6 @@ def generate_queries_command(
     model_list = _parse_model_list(models)
     config = OllamaConfig(base_url=ollama_url, timeout=timeout)
     available_models = _fetch_available_models(config)
-    _print_installed_models(available_models)
     _warn_missing_models(model_list, available_models)
 
     claims = load_claims_jsonl(claims_input)
@@ -1118,7 +1087,6 @@ def run_pipeline_command(
         raise typer.BadParameter("No models provided.")
     config = OllamaConfig(base_url=ollama_url, timeout=timeout)
     available_models = _fetch_available_models(config)
-    _print_installed_models(available_models)
     _warn_missing_models(model_list, available_models)
 
     all_rows = run_claim_extraction(
