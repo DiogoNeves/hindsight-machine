@@ -1,55 +1,116 @@
 # Prototype: Extract Health Claims
 
-This document explains what `scripts/prototype_extract_health_claims.py` currently does.
+This document explains the command structure in `scripts/prototype_extract_health_claims.py`.
 
 ## Purpose
 
-The script is a local prototype for:
+The prototype supports:
 
-1. Extracting health-related claims from normalized transcript segments.
-2. Generating validation search queries for those claims.
+1. Claim extraction from normalized transcript segments.
+2. Validation query generation from claim rows.
+3. A full end-to-end pipeline command.
 
-It uses a local Ollama model and writes JSONL artifacts in `data/`.
+It uses local Ollama models and writes JSONL artifacts in `data/`.
 
-## Inputs
+## Commands
 
-- Transcript input (default):
+Run help:
+
+```bash
+uv run python scripts/prototype_extract_health_claims.py --help
+```
+
+Available commands:
+
+1. `list-models`
+2. `extract-claims`
+3. `generate-queries`
+4. `run-pipeline`
+
+## Command Details
+
+### list-models
+
+Lists installed Ollama models from `/api/tags`.
+
+```bash
+uv run python scripts/prototype_extract_health_claims.py list-models
+```
+
+### extract-claims
+
+Runs only claim extraction and writes claims JSONL.
+
+```bash
+uv run python scripts/prototype_extract_health_claims.py extract-claims \
+  --transcript data/transcripts/norm/web__the-ready-state__layne-norton__2022-10-20__v1.json \
+  --models qwen3:4b \
+  --output data/claims.jsonl \
+  --no-list-claims
+```
+
+### generate-queries
+
+Runs only query generation from an existing claims JSONL.
+
+```bash
+uv run python scripts/prototype_extract_health_claims.py generate-queries \
+  --claims-input data/claims.jsonl \
+  --query-model qwen3:4b \
+  --queries-output data/claim_queries.jsonl \
+  --no-list-queries
+```
+
+### run-pipeline
+
+Runs extraction and query generation end-to-end.
+
+```bash
+uv run python scripts/prototype_extract_health_claims.py run-pipeline \
+  --transcript data/transcripts/norm/web__the-ready-state__layne-norton__2022-10-20__v1.json \
+  --models qwen3:4b \
+  --query-model qwen3:4b \
+  --output data/claims.jsonl \
+  --queries-output data/claim_queries.jsonl
+```
+
+## Inputs and Outputs
+
+Defaults:
+
+- Transcript input:
   - `data/transcripts/norm/web__the-ready-state__layne-norton__2022-10-20__v1.json`
-- Or existing claims input:
-  - `--claims-input data/claims.jsonl` (skips claim extraction stage)
-- Ollama endpoint:
-  - `--ollama-url` (default: `http://127.0.0.1:11434`)
-- Model selection:
-  - `--models` for extraction
-  - `--query-model` for query generation
-
-## Outputs
-
-- Claims JSONL:
+- Claims output:
   - `data/claims.jsonl`
-- Query JSONL:
+- Query output:
   - `data/claim_queries.jsonl`
+- Ollama URL:
+  - `http://127.0.0.1:11434`
 
-## Stage 1: Claim Extraction
+## Data Flow
 
-The script:
+`extract-claims`:
 
-1. Loads transcript `segments`.
-2. Splits transcript into overlapping chunks (`--chunk-size`, `--chunk-overlap`).
-3. Prompts Ollama to extract factual health claims in strict JSON.
-4. Normalizes each claim row and writes:
-   - `claim_id`
-   - `doc_id`
-   - `speaker`
-   - `claim_text`
-   - `evidence` (`seg_id` + quote)
-   - `time_range_s`
-   - `claim_type`
-   - `boldness_rating` (1-3)
-   - `model`
-5. Deduplicates repeated chunk outputs.
+1. Load transcript segments.
+2. Chunk transcript (`--chunk-size`, `--chunk-overlap`).
+3. Prompt Ollama for strict JSON claims.
+4. Normalize and deduplicate claims.
+5. Assign `claim_id` and write JSONL.
 
-### Claim Type Set
+`generate-queries`:
+
+1. Load claims JSONL.
+2. Chunk claims (`--query-chunk-size`, `--query-chunk-overlap`).
+3. Prompt Ollama for validation queries.
+4. Normalize and deduplicate query rows.
+5. Add fallback heuristic queries for uncovered claims.
+6. Write query JSONL.
+
+`run-pipeline` combines both stages in sequence.
+
+## Schema Notes
+
+Claim types:
 
 - `medical_risk`
 - `treatment_effect`
@@ -58,63 +119,28 @@ The script:
 - `epidemiology`
 - `other`
 
-### Boldness Rating
+Claim row fields:
 
-- `1`: mainstream / unsurprising
-- `2`: moderately strong / somewhat surprising
-- `3`: bold / counter-intuitive / highly surprising
+- `claim_id`
+- `doc_id`
+- `speaker`
+- `claim_text`
+- `evidence`
+- `time_range_s`
+- `claim_type`
+- `boldness_rating`
+- `model`
 
-## Stage 2: Query Generation
-
-The script can generate validation queries from claims:
-
-1. Uses extracted claims or `--claims-input`.
-2. Chunks claim rows (`--query-chunk-size`, `--query-chunk-overlap`).
-3. Prompts Ollama to produce concise, natural question-form queries.
-4. Allows one query to represent multiple similar claims.
-5. Normalizes and deduplicates queries.
-6. Fallback logic creates heuristic queries for uncovered claims.
-
-Each query row includes:
+Query row fields:
 
 - `claim_id`
 - `query`
 - `why_this_query`
 - `preferred_sources`
 
-## Useful Run Modes
+## Prototype Characteristics
 
-### Extract claims only
-
-```bash
-uv run python scripts/prototype_extract_health_claims.py \
-  --models qwen3:4b \
-  --no-generate-queries \
-  --no-list-claims \
-  --output data/claims.jsonl
-```
-
-### Generate queries only (from existing claims)
-
-```bash
-uv run python scripts/prototype_extract_health_claims.py \
-  --claims-input data/claims.jsonl \
-  --models qwen3:4b \
-  --query-model qwen3:4b \
-  --no-list-claims \
-  --queries-output data/claim_queries.jsonl
-```
-
-### List local Ollama models
-
-```bash
-uv run python scripts/prototype_extract_health_claims.py --list-models
-```
-
-## Current Prototype Characteristics
-
-- Local, model-prompt based extraction (not deterministic).
-- Recall-first behavior (can include noisy claims).
+- Local prompt-based extraction (non-deterministic).
+- Recall-first extraction behavior.
 - Query generation includes fallback heuristics for coverage.
-- Designed for quick iteration, not final production quality.
-
+- Designed for rapid iteration, not production hardening.

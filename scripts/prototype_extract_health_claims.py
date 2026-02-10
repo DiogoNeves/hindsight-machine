@@ -684,7 +684,215 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             file.write("\n")
 
 
-def main(
+def _parse_model_list(models: str) -> list[str]:
+    return [model.strip() for model in models.split(",") if model.strip()]
+
+
+def _validate_chunking(chunk_size: int, chunk_overlap: int, label: str) -> None:
+    if chunk_size <= 0:
+        raise typer.BadParameter(f"--{label}-size must be > 0")
+    if chunk_overlap < 0:
+        raise typer.BadParameter(f"--{label}-overlap must be >= 0")
+    if chunk_overlap >= chunk_size:
+        raise typer.BadParameter(f"--{label}-overlap must be smaller than --{label}-size")
+
+
+def _validate_common_args(timeout: float, max_segments: int) -> None:
+    if timeout <= 0:
+        raise typer.BadParameter("--timeout must be > 0")
+    if max_segments < 0:
+        raise typer.BadParameter("--max-segments must be >= 0")
+
+
+def _validate_path_exists(path: Path, flag_name: str) -> None:
+    if not path.exists():
+        raise typer.BadParameter(f"{flag_name} path does not exist: {path}")
+
+
+def _fetch_available_models(config: OllamaConfig) -> list[str]:
+    try:
+        return list_ollama_models(config)
+    except urllib.error.URLError as exc:
+        raise typer.BadParameter(
+            f"Could not connect to Ollama at {config.base_url}: {exc}"
+        ) from exc
+
+
+def _print_installed_models(available_models: list[str]) -> None:
+    if available_models:
+        console.print("[bold]Installed Ollama models[/bold]:")
+        for model_name in available_models:
+            console.print(f"  - {model_name}")
+        return
+    console.print("[yellow]No models returned by /api/tags.[/yellow]")
+
+
+def _warn_missing_models(requested_models: list[str], available_models: list[str]) -> None:
+    missing = [name for name in requested_models if name not in available_models]
+    if missing:
+        console.print(f"[yellow]Requested models not found in /api/tags: {missing}[/yellow]")
+
+
+def _print_claim_rows(rows: list[dict[str, Any]]) -> None:
+    console.print("[bold]Extracted claims[/bold]:")
+    for row in rows:
+        console.print(
+            f"{row.get('claim_id', 'unknown')} | {row.get('model', 'unknown')} | "
+            f"{row.get('speaker', 'unknown')} | {row.get('claim_type', 'unknown')} | "
+            f"{row.get('claim_text', '')}"
+        )
+
+
+def _print_query_rows(rows: list[dict[str, Any]]) -> None:
+    console.print("[bold]Validation queries[/bold]:")
+    for row in rows:
+        console.print(
+            f"{row.get('claim_id', 'unknown')} | {row.get('query', '')} | "
+            f"{row.get('why_this_query', '')} | {', '.join(row.get('preferred_sources', []))}"
+        )
+
+
+def run_claim_extraction(
+    transcript: Path,
+    model_list: list[str],
+    config: OllamaConfig,
+    max_segments: int,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> list[dict[str, Any]]:
+    """Run transcript claim extraction and return deduplicated claim rows."""
+    if not model_list:
+        raise typer.BadParameter("No models provided.")
+
+    _validate_path_exists(transcript, "--transcript")
+    _validate_common_args(timeout=config.timeout, max_segments=max_segments)
+    _validate_chunking(chunk_size=chunk_size, chunk_overlap=chunk_overlap, label="chunk")
+
+    doc_id, segments = load_transcript(transcript)
+    if max_segments > 0:
+        segments = segments[:max_segments]
+    chunks = build_chunks(segments, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    start_time_by_seg_id = {
+        str(segment.get("seg_id", "")).strip(): int(segment.get("start_time_s", 0))
+        for segment in segments
+        if str(segment.get("seg_id", "")).strip()
+    }
+
+    all_rows_raw: list[dict[str, Any]] = []
+    for model in model_list:
+        console.print(f"[cyan]Running extraction with model:[/cyan] {model}")
+        model_rows: list[dict[str, Any]] = []
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            segment_block = build_segment_block(chunk, max_segments=len(chunk))
+            messages = build_prompt(
+                doc_id,
+                segment_block,
+                chunk_label=f"{chunk_index}/{len(chunks)}",
+            )
+            try:
+                response_text = ollama_chat(config=config, model=model, messages=messages)
+            except urllib.error.URLError as exc:
+                console.print(f"[red]Failed request for model {model}, chunk {chunk_index}: {exc}[/red]")
+                continue
+            except Exception as exc:  # noqa: BLE001 - keep prototype error handling simple
+                console.print(f"[red]Model {model}, chunk {chunk_index} failed: {exc}[/red]")
+                continue
+
+            try:
+                payload = _extract_json_object(response_text)
+            except ValueError as exc:
+                console.print(
+                    f"[red]Could not parse JSON response for {model}, chunk {chunk_index}: {exc}[/red]"
+                )
+                continue
+
+            claims = payload.get("claims", [])
+            if not isinstance(claims, list):
+                console.print(
+                    f"[yellow]Model {model}, chunk {chunk_index} returned no claims list.[/yellow]"
+                )
+                continue
+
+            normalized_rows = normalize_claims(
+                doc_id=doc_id,
+                model=model,
+                raw_claims=claims,
+                start_time_by_seg_id=start_time_by_seg_id,
+            )
+            model_rows.extend(normalized_rows)
+            console.print(
+                f"[green]{model} chunk {chunk_index}/{len(chunks)}: "
+                f"{len(normalized_rows)} claims[/green]"
+            )
+
+        deduped_model_rows = dedupe_and_assign_claim_ids(model_rows)
+        all_rows_raw.extend(deduped_model_rows)
+        console.print(
+            f"[green]Model {model} produced {len(deduped_model_rows)} unique claims "
+            f"across {len(chunks)} chunks.[/green]"
+        )
+
+    return dedupe_and_assign_claim_ids(all_rows_raw)
+
+
+def run_query_generation(
+    claims: list[dict[str, Any]],
+    config: OllamaConfig,
+    query_model: str | None,
+    model_list: list[str],
+    available_models: list[str],
+    chunk_size: int,
+    chunk_overlap: int,
+) -> list[dict[str, Any]]:
+    """Generate validation queries from existing claim rows."""
+    _validate_chunking(chunk_size=chunk_size, chunk_overlap=chunk_overlap, label="query-chunk")
+    selected_query_model = choose_query_model(
+        query_model=query_model,
+        model_list=model_list,
+        available_models=available_models,
+    )
+    if selected_query_model is None:
+        console.print(
+            "[yellow]Skipping query generation: no model available. "
+            "Use --query-model or install a local Ollama model.[/yellow]"
+        )
+        return []
+
+    console.print(f"[cyan]Generating validation queries with:[/cyan] {selected_query_model}")
+    return generate_validation_queries(
+        claims=claims,
+        config=config,
+        query_model=selected_query_model,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+
+
+app = typer.Typer(help="Prototype commands for extracting health claims and validation queries.")
+
+
+@app.command("list-models")
+def list_models_command(
+    ollama_url: str = typer.Option(
+        DEFAULT_OLLAMA_URL,
+        "--ollama-url",
+        help="Ollama base URL.",
+    ),
+    timeout: float = typer.Option(
+        180.0,
+        "--timeout",
+        help="Ollama request timeout in seconds.",
+    ),
+) -> None:
+    """List installed local Ollama models."""
+    _validate_common_args(timeout=timeout, max_segments=0)
+    config = OllamaConfig(base_url=ollama_url, timeout=timeout)
+    available_models = _fetch_available_models(config)
+    _print_installed_models(available_models)
+
+
+@app.command("extract-claims")
+def extract_claims_command(
     transcript: Path = typer.Option(
         DEFAULT_INPUT,
         "--transcript",
@@ -695,25 +903,10 @@ def main(
         "--output",
         help="Output JSONL file path.",
     ),
-    queries_output: Path = typer.Option(
-        DEFAULT_QUERIES_OUTPUT,
-        "--queries-output",
-        help="Output JSONL file for validation queries.",
-    ),
     models: str = typer.Option(
         DEFAULT_MODELS,
         "--models",
         help="Comma-separated Ollama model names to run for comparison.",
-    ),
-    query_model: str | None = typer.Option(
-        None,
-        "--query-model",
-        help="Model for query generation (default: first available model from --models).",
-    ),
-    claims_input: Path | None = typer.Option(
-        None,
-        "--claims-input",
-        help="Existing claims JSONL to use as query input (skip extraction).",
     ),
     ollama_url: str = typer.Option(
         DEFAULT_OLLAMA_URL,
@@ -740,10 +933,66 @@ def main(
         "--chunk-overlap",
         help="Segment overlap between adjacent chunks.",
     ),
-    generate_queries: bool = typer.Option(
+    list_claims: bool = typer.Option(
         True,
-        "--generate-queries/--no-generate-queries",
-        help="Generate validation queries from extracted claims.",
+        "--list-claims/--no-list-claims",
+        help="Print all extracted claims after writing output.",
+    ),
+) -> None:
+    """Extract claims from transcript segments and write claims JSONL."""
+    model_list = _parse_model_list(models)
+    if not model_list:
+        raise typer.BadParameter("No models provided.")
+    config = OllamaConfig(base_url=ollama_url, timeout=timeout)
+    available_models = _fetch_available_models(config)
+    _print_installed_models(available_models)
+    _warn_missing_models(model_list, available_models)
+
+    all_rows = run_claim_extraction(
+        transcript=transcript,
+        model_list=model_list,
+        config=config,
+        max_segments=max_segments,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+    write_jsonl(output, all_rows)
+    console.print(f"[bold green]Wrote {len(all_rows)} claims to {output}[/bold green]")
+    if list_claims:
+        _print_claim_rows(all_rows)
+
+
+@app.command("generate-queries")
+def generate_queries_command(
+    claims_input: Path = typer.Option(
+        DEFAULT_OUTPUT,
+        "--claims-input",
+        help="Existing claims JSONL used as query-generation input.",
+    ),
+    queries_output: Path = typer.Option(
+        DEFAULT_QUERIES_OUTPUT,
+        "--queries-output",
+        help="Output JSONL file for validation queries.",
+    ),
+    models: str = typer.Option(
+        DEFAULT_MODELS,
+        "--models",
+        help="Comma-separated model names used as fallback selection order.",
+    ),
+    query_model: str | None = typer.Option(
+        None,
+        "--query-model",
+        help="Explicit model for query generation.",
+    ),
+    ollama_url: str = typer.Option(
+        DEFAULT_OLLAMA_URL,
+        "--ollama-url",
+        help="Ollama base URL.",
+    ),
+    timeout: float = typer.Option(
+        180.0,
+        "--timeout",
+        help="Ollama request timeout in seconds.",
     ),
     query_chunk_size: int = typer.Option(
         25,
@@ -755,177 +1004,152 @@ def main(
         "--query-chunk-overlap",
         help="Claims overlap between query-generation chunks.",
     ),
-    list_models_only: bool = typer.Option(
-        False,
-        "--list-models",
-        help="Only list installed Ollama models and exit.",
+    list_queries: bool = typer.Option(
+        True,
+        "--list-queries/--no-list-queries",
+        help="Print generated validation queries after writing output.",
+    ),
+) -> None:
+    """Generate validation queries from an existing claims JSONL file."""
+    _validate_path_exists(claims_input, "--claims-input")
+    _validate_common_args(timeout=timeout, max_segments=0)
+
+    model_list = _parse_model_list(models)
+    config = OllamaConfig(base_url=ollama_url, timeout=timeout)
+    available_models = _fetch_available_models(config)
+    _print_installed_models(available_models)
+    _warn_missing_models(model_list, available_models)
+
+    claims = load_claims_jsonl(claims_input)
+    console.print(f"[green]Loaded {len(claims)} claims from {claims_input}[/green]")
+    query_rows = run_query_generation(
+        claims=claims,
+        config=config,
+        query_model=query_model,
+        model_list=model_list,
+        available_models=available_models,
+        chunk_size=query_chunk_size,
+        chunk_overlap=query_chunk_overlap,
+    )
+    write_jsonl(queries_output, query_rows)
+    console.print(
+        f"[bold green]Wrote {len(query_rows)} validation queries to {queries_output}[/bold green]"
+    )
+    if list_queries:
+        _print_query_rows(query_rows)
+
+
+@app.command("run-pipeline")
+def run_pipeline_command(
+    transcript: Path = typer.Option(
+        DEFAULT_INPUT,
+        "--transcript",
+        help="Path to normalized transcript JSON with segments.",
+    ),
+    output: Path = typer.Option(
+        DEFAULT_OUTPUT,
+        "--output",
+        help="Output JSONL file path for extracted claims.",
+    ),
+    queries_output: Path = typer.Option(
+        DEFAULT_QUERIES_OUTPUT,
+        "--queries-output",
+        help="Output JSONL file path for validation queries.",
+    ),
+    models: str = typer.Option(
+        DEFAULT_MODELS,
+        "--models",
+        help="Comma-separated Ollama model names to run for extraction.",
+    ),
+    query_model: str | None = typer.Option(
+        None,
+        "--query-model",
+        help="Model for query generation (default: first available model from --models).",
+    ),
+    ollama_url: str = typer.Option(
+        DEFAULT_OLLAMA_URL,
+        "--ollama-url",
+        help="Ollama base URL.",
+    ),
+    timeout: float = typer.Option(
+        180.0,
+        "--timeout",
+        help="Ollama request timeout in seconds.",
+    ),
+    max_segments: int = typer.Option(
+        0,
+        "--max-segments",
+        help="Optional cap on transcript segments to process (0 = all).",
+    ),
+    chunk_size: int = typer.Option(
+        45,
+        "--chunk-size",
+        help="Transcript segments per model call.",
+    ),
+    chunk_overlap: int = typer.Option(
+        12,
+        "--chunk-overlap",
+        help="Segment overlap between adjacent chunks.",
+    ),
+    query_chunk_size: int = typer.Option(
+        25,
+        "--query-chunk-size",
+        help="Claims per query-generation model call.",
+    ),
+    query_chunk_overlap: int = typer.Option(
+        5,
+        "--query-chunk-overlap",
+        help="Claims overlap between query-generation chunks.",
     ),
     list_claims: bool = typer.Option(
         True,
         "--list-claims/--no-list-claims",
-        help="Print all extracted claims after writing output.",
+        help="Print extracted claims after writing output.",
+    ),
+    list_queries: bool = typer.Option(
+        True,
+        "--list-queries/--no-list-queries",
+        help="Print generated validation queries after writing output.",
     ),
 ) -> None:
-    """Run claim extraction with one or more Ollama models and write JSONL output."""
-    if not transcript.exists():
-        raise typer.BadParameter(f"Transcript path does not exist: {transcript}")
-    if max_segments < 0:
-        raise typer.BadParameter("--max-segments must be >= 0")
-    if chunk_size <= 0:
-        raise typer.BadParameter("--chunk-size must be > 0")
-    if chunk_overlap < 0:
-        raise typer.BadParameter("--chunk-overlap must be >= 0")
-    if chunk_overlap >= chunk_size:
-        raise typer.BadParameter("--chunk-overlap must be smaller than --chunk-size")
-    if query_chunk_size <= 0:
-        raise typer.BadParameter("--query-chunk-size must be > 0")
-    if query_chunk_overlap < 0:
-        raise typer.BadParameter("--query-chunk-overlap must be >= 0")
-    if query_chunk_overlap >= query_chunk_size:
-        raise typer.BadParameter("--query-chunk-overlap must be smaller than --query-chunk-size")
-    if claims_input is not None and not claims_input.exists():
-        raise typer.BadParameter(f"--claims-input path does not exist: {claims_input}")
-
-    model_list = [model.strip() for model in models.split(",") if model.strip()]
-    if not model_list and claims_input is None:
+    """Run extraction and query generation end-to-end."""
+    model_list = _parse_model_list(models)
+    if not model_list:
         raise typer.BadParameter("No models provided.")
-
     config = OllamaConfig(base_url=ollama_url, timeout=timeout)
+    available_models = _fetch_available_models(config)
+    _print_installed_models(available_models)
+    _warn_missing_models(model_list, available_models)
 
-    try:
-        available_models = list_ollama_models(config)
-        if available_models:
-            console.print("[bold]Installed Ollama models[/bold]:")
-            for model_name in available_models:
-                console.print(f"  - {model_name}")
-        else:
-            console.print("[yellow]No models returned by /api/tags.[/yellow]")
-        missing = [name for name in model_list if name not in available_models]
-        if missing:
-            console.print(f"[yellow]Requested models not found in /api/tags: {missing}[/yellow]")
-    except urllib.error.URLError as exc:
-        raise typer.BadParameter(f"Could not connect to Ollama at {ollama_url}: {exc}") from exc
-
-    if list_models_only:
-        return
-
-    all_rows: list[dict[str, Any]]
-    if claims_input is not None:
-        all_rows = load_claims_jsonl(claims_input)
-        console.print(f"[green]Loaded {len(all_rows)} claims from {claims_input}[/green]")
-    else:
-        doc_id, segments = load_transcript(transcript)
-        if max_segments > 0:
-            segments = segments[:max_segments]
-        chunks = build_chunks(segments, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        start_time_by_seg_id = {
-            str(segment.get("seg_id", "")).strip(): int(segment.get("start_time_s", 0))
-            for segment in segments
-            if str(segment.get("seg_id", "")).strip()
-        }
-
-        all_rows_raw: list[dict[str, Any]] = []
-
-        for model in model_list:
-            console.print(f"[cyan]Running extraction with model:[/cyan] {model}")
-            model_rows: list[dict[str, Any]] = []
-            for chunk_index, chunk in enumerate(chunks, start=1):
-                segment_block = build_segment_block(chunk, max_segments=len(chunk))
-                messages = build_prompt(
-                    doc_id,
-                    segment_block,
-                    chunk_label=f"{chunk_index}/{len(chunks)}",
-                )
-                try:
-                    response_text = ollama_chat(config=config, model=model, messages=messages)
-                except urllib.error.URLError as exc:
-                    console.print(
-                        f"[red]Failed request for model {model}, chunk {chunk_index}: {exc}[/red]"
-                    )
-                    continue
-                except Exception as exc:  # noqa: BLE001 - keep prototype error handling simple
-                    console.print(f"[red]Model {model}, chunk {chunk_index} failed: {exc}[/red]")
-                    continue
-
-                try:
-                    payload = _extract_json_object(response_text)
-                except ValueError as exc:
-                    console.print(
-                        f"[red]Could not parse JSON response for {model}, chunk {chunk_index}: {exc}[/red]"
-                    )
-                    continue
-
-                claims = payload.get("claims", [])
-                if not isinstance(claims, list):
-                    console.print(
-                        f"[yellow]Model {model}, chunk {chunk_index} returned no claims list.[/yellow]"
-                    )
-                    continue
-
-                normalized_rows = normalize_claims(
-                    doc_id=doc_id,
-                    model=model,
-                    raw_claims=claims,
-                    start_time_by_seg_id=start_time_by_seg_id,
-                )
-                model_rows.extend(normalized_rows)
-                console.print(
-                    f"[green]{model} chunk {chunk_index}/{len(chunks)}: "
-                    f"{len(normalized_rows)} claims[/green]"
-                )
-
-            deduped_model_rows = dedupe_and_assign_claim_ids(model_rows)
-            all_rows_raw.extend(deduped_model_rows)
-            console.print(
-                f"[green]Model {model} produced {len(deduped_model_rows)} unique claims "
-                f"across {len(chunks)} chunks.[/green]"
-            )
-
-        all_rows = dedupe_and_assign_claim_ids(all_rows_raw)
-        write_jsonl(output, all_rows)
-        console.print(f"[bold green]Wrote {len(all_rows)} claims to {output}[/bold green]")
-
+    all_rows = run_claim_extraction(
+        transcript=transcript,
+        model_list=model_list,
+        config=config,
+        max_segments=max_segments,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+    write_jsonl(output, all_rows)
+    console.print(f"[bold green]Wrote {len(all_rows)} claims to {output}[/bold green]")
     if list_claims:
-        console.print("[bold]Extracted claims[/bold]:")
-        for row in all_rows:
-            console.print(
-                f"{row.get('claim_id', 'unknown')} | {row.get('model', 'unknown')} | "
-                f"{row.get('speaker', 'unknown')} | {row.get('claim_type', 'unknown')} | "
-                f"{row.get('claim_text', '')}"
-            )
+        _print_claim_rows(all_rows)
 
-    if generate_queries:
-        selected_query_model = choose_query_model(
-            query_model=query_model,
-            model_list=model_list,
-            available_models=available_models,
-        )
-        if selected_query_model is None:
-            console.print(
-                "[yellow]Skipping query generation: no model available. "
-                "Use --query-model or install a local Ollama model.[/yellow]"
-            )
-            return
-
-        console.print(f"[cyan]Generating validation queries with:[/cyan] {selected_query_model}")
-        query_rows = generate_validation_queries(
-            claims=all_rows,
-            config=config,
-            query_model=selected_query_model,
-            chunk_size=query_chunk_size,
-            chunk_overlap=query_chunk_overlap,
-        )
-        write_jsonl(queries_output, query_rows)
-        console.print(
-            f"[bold green]Wrote {len(query_rows)} validation queries to {queries_output}[/bold green]"
-        )
-        console.print("[bold]Validation queries[/bold]:")
-        for row in query_rows:
-            console.print(
-                f"{row['claim_id']} | {row['query']} | {row['why_this_query']} | "
-                f"{', '.join(row['preferred_sources'])}"
-            )
+    query_rows = run_query_generation(
+        claims=all_rows,
+        config=config,
+        query_model=query_model,
+        model_list=model_list,
+        available_models=available_models,
+        chunk_size=query_chunk_size,
+        chunk_overlap=query_chunk_overlap,
+    )
+    write_jsonl(queries_output, query_rows)
+    console.print(
+        f"[bold green]Wrote {len(query_rows)} validation queries to {queries_output}[/bold green]"
+    )
+    if list_queries:
+        _print_query_rows(query_rows)
 
 
 if __name__ == "__main__":
-    typer.run(main)
+    app()
