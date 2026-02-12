@@ -8,10 +8,10 @@ These formats are currently part of a prototype ingestion and extraction flow.
 
 - Raw transcript extraction script: `skills/get-transcript-from-url/scripts/extract_web_transcript.py`
 - Raw -> normalized conversion script: `scripts/normalize_raw_transcript_segments.py`
-- Normalized transcript consumer: `scripts/prototype_extract_health_claims.py`
-  - Consumer implementation modules: `src/proof_please/pipeline/`
+- Normalized transcript consumer: `uv run proof-please extract-claims ...`
+  - Consumer implementation modules: `src/proof_please/pipeline/` and `src/proof_please/core/`
 
-For command usage and stage/module details, see `docs/prototype_extract_health_claims.md`.
+For command usage and stage/module details, see `docs/extracting_health_claims.md`.
 
 Both are temporary and expected to be replaced by a more scalable, source-agnostic implementation later.
 

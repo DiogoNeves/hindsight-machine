@@ -4,9 +4,9 @@ import subprocess
 import sys
 
 
-def test_prototype_script_help_lists_commands() -> None:
+def test_package_cli_help_lists_commands() -> None:
     result = subprocess.run(
-        [sys.executable, "scripts/prototype_extract_health_claims.py", "--help"],
+        [sys.executable, "-m", "proof_please.cli", "--help"],
         check=True,
         capture_output=True,
         text=True,

@@ -13,4 +13,4 @@ init-db:
     uv run proof-please init-db
 
 extract-claims transcript:
-    uv run proof-please extract-claims {{transcript}}
+    uv run proof-please extract-claims --transcript {{transcript}}

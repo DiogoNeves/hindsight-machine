@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import re
 import urllib.error
+from collections.abc import Callable
 from typing import Any
 
-from rich.console import Console
-
+from proof_please.core.io import extract_json_object
+from proof_please.core.model_client import chat_with_model
 from proof_please.pipeline.chunking import build_chunks
 from proof_please.pipeline.dedupe import dedupe_and_assign_claim_ids
-from proof_please.pipeline.io import extract_json_object
-from proof_please.pipeline.models import OllamaConfig
+from proof_please.pipeline.models import ModelBackendConfig
 from proof_please.pipeline.normalize import normalize_claims
-from proof_please.pipeline.ollama_client import ollama_chat
 
 
 def build_segment_block(segments: list[dict[str, Any]], max_segments: int) -> str:
@@ -35,7 +34,7 @@ def build_prompt(doc_id: str, segment_block: str, chunk_label: str) -> list[dict
     system = (
         "You extract health and medical claims from transcripts. "
         "Return JSON only with this shape: "
-        '{"claims":[{"speaker":"...","claim_text":"...","evidence":[{"seg_id":"...","quote":"..."}],'
+        '{"claims":[{"speaker":"...","claim_text":"...","evidence":[{"seg_id":"...","quote":"..."}],' 
         '"time_range_s":{"start":0,"end":0},"claim_type":"medical_risk","boldness_rating":2}]}. '
         "Do not add markdown or commentary."
     )
@@ -67,12 +66,17 @@ def extract_claims_for_models(
     doc_id: str,
     segments: list[dict[str, Any]],
     model_list: list[str],
-    config: OllamaConfig,
+    config: ModelBackendConfig,
     chunk_size: int,
     chunk_overlap: int,
-    console: Console,
+    on_status: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Run multi-model claim extraction and return deduplicated rows."""
+
+    def emit(message: str) -> None:
+        if on_status:
+            on_status(message)
+
     chunks = build_chunks(segments, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     start_time_by_seg_id = {
         str(segment.get("seg_id", "")).strip(): int(segment.get("start_time_s", 0))
@@ -82,7 +86,7 @@ def extract_claims_for_models(
 
     all_rows_raw: list[dict[str, Any]] = []
     for model in model_list:
-        console.print(f"[cyan]Running extraction with model:[/cyan] {model}")
+        emit(f"Running extraction with model: {model}")
         model_rows: list[dict[str, Any]] = []
         for chunk_index, chunk in enumerate(chunks, start=1):
             segment_block = build_segment_block(chunk, max_segments=len(chunk))
@@ -92,27 +96,23 @@ def extract_claims_for_models(
                 chunk_label=f"{chunk_index}/{len(chunks)}",
             )
             try:
-                response_text = ollama_chat(config=config, model=model, messages=messages)
+                response_text = chat_with_model(config=config, model=model, messages=messages)
             except urllib.error.URLError as exc:
-                console.print(f"[red]Failed request for model {model}, chunk {chunk_index}: {exc}[/red]")
+                emit(f"Failed request for model {model}, chunk {chunk_index}: {exc}")
                 continue
             except Exception as exc:  # noqa: BLE001 - keep prototype error handling simple
-                console.print(f"[red]Model {model}, chunk {chunk_index} failed: {exc}[/red]")
+                emit(f"Model {model}, chunk {chunk_index} failed: {exc}")
                 continue
 
             try:
                 payload = extract_json_object(response_text)
             except ValueError as exc:
-                console.print(
-                    f"[red]Could not parse JSON response for {model}, chunk {chunk_index}: {exc}[/red]"
-                )
+                emit(f"Could not parse JSON response for {model}, chunk {chunk_index}: {exc}")
                 continue
 
             claims = payload.get("claims", [])
             if not isinstance(claims, list):
-                console.print(
-                    f"[yellow]Model {model}, chunk {chunk_index} returned no claims list.[/yellow]"
-                )
+                emit(f"Model {model}, chunk {chunk_index} returned no claims list.")
                 continue
 
             normalized_rows = normalize_claims(
@@ -122,16 +122,13 @@ def extract_claims_for_models(
                 start_time_by_seg_id=start_time_by_seg_id,
             )
             model_rows.extend(normalized_rows)
-            console.print(
-                f"[green]{model} chunk {chunk_index}/{len(chunks)}: "
-                f"{len(normalized_rows)} claims[/green]"
-            )
+            emit(f"{model} chunk {chunk_index}/{len(chunks)}: {len(normalized_rows)} claims")
 
         deduped_model_rows = dedupe_and_assign_claim_ids(model_rows)
         all_rows_raw.extend(deduped_model_rows)
-        console.print(
-            f"[green]Model {model} produced {len(deduped_model_rows)} unique claims "
-            f"across {len(chunks)} chunks.[/green]"
+        emit(
+            f"Model {model} produced {len(deduped_model_rows)} unique claims "
+            f"across {len(chunks)} chunks."
         )
 
     return dedupe_and_assign_claim_ids(all_rows_raw)

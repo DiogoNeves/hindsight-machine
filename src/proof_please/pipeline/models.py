@@ -1,4 +1,4 @@
-"""Pydantic models for the prototype health-claims pipeline."""
+"""Pydantic models for the health-claims pipeline."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ ALLOWED_CLAIM_TYPES = {
 }
 
 
-class OllamaConfig(BaseModel):
-    """Runtime config for local Ollama calls."""
+class ModelBackendConfig(BaseModel):
+    """Runtime config for model backend calls."""
 
     model_config = ConfigDict(extra="ignore")
 

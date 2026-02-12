@@ -10,19 +10,20 @@ The core idea is simple: extract concrete claims from transcript text, query sci
   - `skills/get-transcript-from-url/scripts/extract_web_transcript.py`
   - `scripts/normalize_raw_transcript_segments.py`
 - Claim extraction and query-generation prototype:
-  - CLI entrypoint: `scripts/prototype_extract_health_claims.py`
-  - Implementation modules: `src/proof_please/pipeline/`
-- Core app scaffolding:
+  - CLI entrypoint: `uv run proof-please ...`
+  - Pipeline modules: `src/proof_please/pipeline/`
+  - Core adapters/shared APIs: `src/proof_please/core/`
+- Core app commands:
   - `uv run proof-please config`
   - `uv run proof-please init-db`
-  - `uv run proof-please extract-claims ...` (currently placeholder/not implemented)
+  - `uv run proof-please extract-claims ...`
 - Local DuckDB schema bootstrap in `data/proof_please.duckdb`.
 
 ## Documentation
 
 - `docs/README.md`: docs index
 - `docs/transcript_formats.md`: raw + normalized transcript formats and file layout
-- `docs/prototype_extract_health_claims.md`: command-level walkthrough for the claims prototype
+- `docs/extracting_health_claims.md`: current claims pipeline architecture and command usage
 
 ## Consensus API
 
@@ -41,28 +42,22 @@ Current prototype code does not yet call the Consensus API directly.
 uv sync
 ```
 
-## Core App Commands
+## CLI Commands
 
 ```bash
 just sync
 just init-db
 just run config
-just extract-claims path/to/transcript.txt
 uv run proof-please --help
+uv run proof-please extract-claims --help
+uv run proof-please generate-queries --help
+uv run proof-please run-pipeline --help
 ```
 
-Note: `just extract-claims` currently calls a placeholder command in `src/proof_please/cli.py`.
+Model backend flags:
 
-## Prototype Pipeline Commands
-
-Use the prototype script for actual transcript claim extraction/query generation:
-
-```bash
-uv run python scripts/prototype_extract_health_claims.py --help
-uv run python scripts/prototype_extract_health_claims.py extract-claims --help
-uv run python scripts/prototype_extract_health_claims.py generate-queries --help
-uv run python scripts/prototype_extract_health_claims.py run-pipeline --help
-```
+- Primary: `--backend-url`
+- Backward-compatible alias: `--ollama-url`
 
 Normalize raw transcript JSON into segmented transcript JSON:
 

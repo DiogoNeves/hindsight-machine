@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from proof_please.pipeline.io import load_claims_jsonl, load_transcript, write_jsonl
+from proof_please.core.io import load_claims_jsonl, load_transcript, write_jsonl
 
 
 def test_write_and_load_claims_jsonl_roundtrip(tmp_path: Path) -> None:

@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
-from rich.console import Console
-
+from proof_please.core.io import extract_json_object
+from proof_please.core.model_client import chat_with_model
 from proof_please.pipeline.chunking import build_chunks
 from proof_please.pipeline.dedupe import dedupe_queries
-from proof_please.pipeline.io import extract_json_object
-from proof_please.pipeline.models import OllamaConfig
+from proof_please.pipeline.models import ModelBackendConfig
 from proof_please.pipeline.normalize import generate_heuristic_queries, normalize_query_rows
-from proof_please.pipeline.ollama_client import ollama_chat
 
 
 def build_claims_block(claims: list[dict[str, Any]]) -> str:
@@ -35,7 +34,7 @@ def build_query_prompt(claims_block: str, chunk_label: str) -> list[dict[str, st
         "Every `query` must be a single, natural-sounding question that helps evaluate "
         "scientific consensus for a claim or a small set of similar claims. "
         "Return JSON only with this shape: "
-        '{"queries":[{"claim_id":"clm_000001","query":"...","why_this_query":"...",'
+        '{"queries":[{"claim_id":"clm_000001","query":"...","why_this_query":"...",' 
         '"preferred_sources":["systematic review","meta-analysis","guideline"]}]}. '
     )
     user = (
@@ -83,13 +82,18 @@ def choose_query_model(
 
 def generate_validation_queries(
     claims: list[dict[str, Any]],
-    config: OllamaConfig,
+    config: ModelBackendConfig,
     query_model: str,
     chunk_size: int,
     chunk_overlap: int,
-    console: Console,
+    on_status: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate deduplicated validation queries from extracted claims."""
+
+    def emit(message: str) -> None:
+        if on_status:
+            on_status(message)
+
     valid_claim_ids = {
         str(claim.get("claim_id", "")).strip()
         for claim in claims
@@ -107,19 +111,15 @@ def generate_validation_queries(
             continue
         messages = build_query_prompt(claims_block, chunk_label=f"{chunk_index}/{len(chunks)}")
         try:
-            response_text = ollama_chat(config=config, model=query_model, messages=messages)
+            response_text = chat_with_model(config=config, model=query_model, messages=messages)
         except Exception as exc:  # noqa: BLE001 - prototype tolerance
-            console.print(
-                f"[red]Query generation failed for chunk {chunk_index}/{len(chunks)}: {exc}[/red]"
-            )
+            emit(f"Query generation failed for chunk {chunk_index}/{len(chunks)}: {exc}")
             continue
 
         try:
             payload = extract_json_object(response_text)
         except ValueError as exc:
-            console.print(
-                f"[red]Invalid query JSON for chunk {chunk_index}/{len(chunks)}: {exc}[/red]"
-            )
+            emit(f"Invalid query JSON for chunk {chunk_index}/{len(chunks)}: {exc}")
             continue
 
         raw_queries = payload.get("queries", [])
@@ -127,10 +127,7 @@ def generate_validation_queries(
             continue
         normalized = normalize_query_rows(raw_queries, valid_claim_ids=valid_claim_ids)
         query_rows_raw.extend(normalized)
-        console.print(
-            f"[green]{query_model} query chunk {chunk_index}/{len(chunks)}: "
-            f"{len(normalized)} queries[/green]"
-        )
+        emit(f"{query_model} query chunk {chunk_index}/{len(chunks)}: {len(normalized)} queries")
 
     deduped_llm_queries = dedupe_queries(query_rows_raw)
     covered_claim_ids = {row["claim_id"] for row in deduped_llm_queries}
@@ -141,9 +138,7 @@ def generate_validation_queries(
         and str(claim.get("claim_id", "")).strip() not in covered_claim_ids
     ]
     if missing_claims:
-        console.print(
-            f"[yellow]Adding fallback queries for {len(missing_claims)} uncovered claims.[/yellow]"
-        )
+        emit(f"Adding fallback queries for {len(missing_claims)} uncovered claims.")
         deduped_llm_queries.extend(generate_heuristic_queries(missing_claims))
 
     return dedupe_queries(deduped_llm_queries)

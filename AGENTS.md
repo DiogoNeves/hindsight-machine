@@ -2,19 +2,21 @@
 
 ## Project Structure & Module Organization
 Core package code lives in `src/proof_please/`:
-- `cli.py` contains Typer commands (`config`, `init-db`, `extract-claims`).
+- `cli.py` contains Typer commands (`config`, `init-db`, `extract-claims`, `generate-queries`, `run-pipeline`).
 - `config.py` defines runtime settings via `pydantic-settings`.
 - `db.py` manages DuckDB connection and schema bootstrap.
-- `models.py` holds domain models (for example, `HealthClaim`).
+- `domain_models.py` holds package-level domain models (for example, `HealthClaim`).
+- `pipeline/` holds pipeline stages and orchestration logic.
+- `core/` holds shared adapters (model client, I/O, and console rendering).
 
-Utility experiments live in `scripts/` (currently `prototype_extract_health_claims.py`). Runtime artifacts are stored in `data/` (default DB path: `data/proof_please.duckdb`).
+Utility experiments live in `scripts/` (for example transcript normalization scripts). Runtime artifacts are stored in `data/` (default DB path: `data/proof_please.duckdb`).
 
 ## Build, Test, and Development Commands
 - `uv sync` or `just sync`: install and lock project dependencies.
 - `uv add <package>`: add new dependencies and update the lockfile.
 - `just run config`: print active app configuration.
 - `just init-db`: create/update the local DuckDB schema.
-- `just extract-claims path/to/transcript.txt`: run health-claim extractor scaffold.
+- `just extract-claims path/to/transcript.txt`: run claim extraction.
 - `uv run proof-please --help`: view all CLI commands.
 
 ## Coding Style & Naming Conventions
