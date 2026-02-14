@@ -41,6 +41,8 @@ def test_run_claim_extraction_orchestrates_stage(monkeypatch) -> None:
     assert rows == [{"claim_id": "clm_000001", "claim_text": "x"}]
     assert captured["doc_id"] == "doc_1"
     assert len(captured["segments"]) == 1
+    assert isinstance(captured["run_id"], str)
+    assert captured["run_id"].startswith("run_")
 
 
 def test_run_query_generation_skips_when_no_model(monkeypatch) -> None:
@@ -87,6 +89,8 @@ def test_run_query_generation_uses_selected_model(monkeypatch) -> None:
 
     assert rows == [{"claim_id": "clm_000001", "query": "Is x?"}]
     assert captured["query_model"] == "qwen3:4b"
+    assert isinstance(captured["run_id"], str)
+    assert captured["run_id"].startswith("run_")
 
 
 def test_run_claim_extraction_rejects_empty_models() -> None:

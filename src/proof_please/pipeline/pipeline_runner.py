@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import urllib.error
+from uuid import uuid4
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -54,11 +55,13 @@ def run_claim_extraction(
     chunk_size: int,
     chunk_overlap: int,
     on_status: Callable[[str], None] | None = None,
+    run_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run transcript claim extraction and return deduplicated claim rows."""
     if not model_list:
         raise ValueError("No models provided.")
 
+    run_id = run_id or f"run_{uuid4().hex[:12]}"
     validate_path_exists(transcript, "--transcript")
     validate_common_args(timeout=config.timeout, max_segments=max_segments)
 
@@ -74,6 +77,7 @@ def run_claim_extraction(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         on_status=on_status,
+        run_id=run_id,
     )
 
 
@@ -86,12 +90,15 @@ def run_query_generation(
     chunk_size: int,
     chunk_overlap: int,
     on_status: Callable[[str], None] | None = None,
+    run_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Generate validation queries from existing claim rows."""
 
     def emit(message: str) -> None:
         if on_status:
             on_status(message)
+
+    run_id = run_id or f"run_{uuid4().hex[:12]}"
 
     selected_query_model = choose_query_model(
         query_model=query_model,
@@ -113,4 +120,5 @@ def run_query_generation(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         on_status=on_status,
+        run_id=run_id,
     )

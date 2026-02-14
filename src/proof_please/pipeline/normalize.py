@@ -9,6 +9,7 @@ from proof_please.pipeline.models import (
     ALLOWED_CLAIM_TYPES,
     ClaimRecord,
     EvidenceItem,
+    EvidenceSpan,
     QueryRecord,
     TimeRange,
 )
@@ -64,6 +65,13 @@ def normalize_boldness_rating(claim: dict[str, Any]) -> int:
             "claim_type": "other",
             "boldness_rating": raw_value,
             "model": "",
+            "provenance": {
+                "run_id": "run_placeholder",
+                "step": "extract_claims",
+                "input_refs": [],
+                "evidence_span": {},
+                "rationale": "placeholder",
+            },
         }
     ).boldness_rating
 
@@ -73,6 +81,7 @@ def normalize_claims(
     model: str,
     raw_claims: list[dict[str, Any]],
     start_time_by_seg_id: dict[str, int],
+    run_id: str,
 ) -> list[dict[str, Any]]:
     """Normalize model output into final JSONL rows."""
     out: list[dict[str, Any]] = []
@@ -101,6 +110,13 @@ def normalize_claims(
             fallback_end=fallback_end,
         )
         try:
+            segment_ids = [item["seg_id"] for item in evidence]
+            evidence_span = EvidenceSpan.model_validate(
+                {
+                    "segment_ids": segment_ids,
+                    "time_range_s": time_range,
+                }
+            )
             normalized = ClaimRecord.model_validate(
                 {
                     "doc_id": doc_id,
@@ -111,6 +127,15 @@ def normalize_claims(
                     "claim_type": claim_type,
                     "boldness_rating": boldness_rating,
                     "model": model,
+                    "provenance": {
+                        "run_id": run_id,
+                        "step": "extract_claims",
+                        "input_refs": segment_ids,
+                        "evidence_span": evidence_span.model_dump(),
+                        "rationale": (
+                            f"Extracted from transcript evidence spans by model {model}."
+                        ),
+                    },
                 }
             )
         except Exception:  # noqa: BLE001 - preserve lenient prototype behavior
@@ -170,6 +195,8 @@ def naturalize_query_question(text: str) -> str:
 def normalize_query_rows(
     raw_queries: list[dict[str, Any]],
     valid_claim_ids: set[str],
+    run_id: str,
+    claim_rows_by_id: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Normalize model query rows into the expected JSONL schema."""
     rows: list[dict[str, Any]] = []
@@ -195,12 +222,22 @@ def normalize_query_rows(
         if not normalized_sources:
             normalized_sources = ["systematic review", "meta-analysis", "guideline"]
         try:
+            claim_row = claim_rows_by_id.get(claim_id, {})
+            claim_provenance = claim_row.get("provenance", {}) if isinstance(claim_row, dict) else {}
+            evidence_span = claim_provenance.get("evidence_span", {})
             normalized = QueryRecord.model_validate(
                 {
                     "claim_id": claim_id,
                     "query": query,
                     "why_this_query": why_this_query,
                     "preferred_sources": normalized_sources,
+                    "provenance": {
+                        "run_id": run_id,
+                        "step": "generate_queries",
+                        "input_refs": [claim_id],
+                        "evidence_span": evidence_span if isinstance(evidence_span, dict) else {},
+                        "rationale": why_this_query,
+                    },
                 }
             )
         except Exception:  # noqa: BLE001 - preserve lenient prototype behavior
@@ -272,7 +309,7 @@ def _jaccard_similarity(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
-def generate_heuristic_queries(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def generate_heuristic_queries(claims: list[dict[str, Any]], run_id: str) -> list[dict[str, Any]]:
     """Fallback query generation for claims not covered by LLM output."""
     rows: list[dict[str, Any]] = []
     existing_token_groups: list[set[str]] = []
@@ -289,15 +326,25 @@ def generate_heuristic_queries(claims: list[dict[str, Any]]) -> list[dict[str, A
         source_types = sources_for_claim_type(claim_type)
         query = naturalize_query_question(claim_text)
         try:
+            claim_provenance = claim.get("provenance", {}) if isinstance(claim, dict) else {}
+            evidence_span = claim_provenance.get("evidence_span", {})
+            rationale = (
+                "Fallback query for claim validation using high-evidence source types "
+                "matched to claim category."
+            )
             normalized = QueryRecord.model_validate(
                 {
                     "claim_id": claim_id,
                     "query": query,
-                    "why_this_query": (
-                        "Fallback query for claim validation using high-evidence source types "
-                        "matched to claim category."
-                    ),
+                    "why_this_query": rationale,
                     "preferred_sources": source_types,
+                    "provenance": {
+                        "run_id": run_id,
+                        "step": "generate_queries",
+                        "input_refs": [claim_id],
+                        "evidence_span": evidence_span if isinstance(evidence_span, dict) else {},
+                        "rationale": rationale,
+                    },
                 }
             )
         except Exception:  # noqa: BLE001 - preserve lenient prototype behavior

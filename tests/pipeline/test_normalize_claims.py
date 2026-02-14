@@ -21,6 +21,7 @@ def test_normalize_claims_coerces_values_and_fallbacks() -> None:
         model="qwen3:4b",
         raw_claims=raw_claims,
         start_time_by_seg_id=start_time_by_seg_id,
+        run_id="run_test123",
     )
 
     assert len(rows) == 1
@@ -29,6 +30,9 @@ def test_normalize_claims_coerces_values_and_fallbacks() -> None:
     assert row["claim_type"] == "other"
     assert row["boldness_rating"] == 3
     assert row["time_range_s"] == {"start": 100, "end": 100}
+    assert row["provenance"]["run_id"] == "run_test123"
+    assert row["provenance"]["step"] == "extract_claims"
+    assert row["provenance"]["input_refs"] == ["seg_000010"]
 
 
 def test_normalize_claims_skips_empty_claim_or_evidence() -> None:
@@ -42,6 +46,7 @@ def test_normalize_claims_skips_empty_claim_or_evidence() -> None:
         model="qwen3:4b",
         raw_claims=raw_claims,
         start_time_by_seg_id={},
+        run_id="run_test123",
     )
 
     assert rows == []

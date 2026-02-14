@@ -70,6 +70,7 @@ def extract_claims_for_models(
     chunk_size: int,
     chunk_overlap: int,
     on_status: Callable[[str], None] | None = None,
+    run_id: str = "",
 ) -> list[dict[str, Any]]:
     """Run multi-model claim extraction and return deduplicated rows."""
 
@@ -120,6 +121,7 @@ def extract_claims_for_models(
                 model=model,
                 raw_claims=claims,
                 start_time_by_seg_id=start_time_by_seg_id,
+                run_id=run_id,
             )
             model_rows.extend(normalized_rows)
             emit(f"{model} chunk {chunk_index}/{len(chunks)}: {len(normalized_rows)} claims")

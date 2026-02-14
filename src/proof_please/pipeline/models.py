@@ -102,6 +102,55 @@ class TimeRange(BaseModel):
         return self
 
 
+class EvidenceSpan(BaseModel):
+    """Evidence span metadata for provenance."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    segment_ids: list[str] = Field(default_factory=list)
+    time_range_s: TimeRange = Field(default_factory=TimeRange)
+
+    @field_validator("segment_ids", mode="before")
+    @classmethod
+    def _normalize_segment_ids(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+
+class ProvenanceRecord(BaseModel):
+    """Step-level provenance payload attached to generated rows."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    run_id: str
+    step: str
+    input_refs: list[str] = Field(default_factory=list)
+    evidence_span: dict[str, Any] = Field(default_factory=dict)
+    rationale: str
+
+    @field_validator("run_id", "step", "rationale", mode="before")
+    @classmethod
+    def _normalize_text_fields(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("input_refs", mode="before")
+    @classmethod
+    def _normalize_input_refs(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    @field_validator("evidence_span", mode="before")
+    @classmethod
+    def _normalize_evidence_span(cls, value: Any) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        return {}
+
+
 class ClaimRecord(BaseModel):
     """Final normalized claim row written to JSONL."""
 
@@ -116,6 +165,7 @@ class ClaimRecord(BaseModel):
     boldness_rating: int = 2
     model: str
     claim_id: str | None = None
+    provenance: ProvenanceRecord
 
     @field_validator("doc_id", "speaker", "claim_text", "model", mode="before")
     @classmethod
@@ -151,6 +201,7 @@ class QueryRecord(BaseModel):
     query: str
     why_this_query: str
     preferred_sources: list[str] = Field(default_factory=list)
+    provenance: ProvenanceRecord
 
     @field_validator("claim_id", "query", "why_this_query", mode="before")
     @classmethod

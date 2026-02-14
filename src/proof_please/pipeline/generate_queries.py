@@ -87,6 +87,7 @@ def generate_validation_queries(
     chunk_size: int,
     chunk_overlap: int,
     on_status: Callable[[str], None] | None = None,
+    run_id: str = "",
 ) -> list[dict[str, Any]]:
     """Generate deduplicated validation queries from extracted claims."""
 
@@ -103,6 +104,11 @@ def generate_validation_queries(
         return []
 
     chunks = build_chunks(claims, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    claim_rows_by_id = {
+        str(claim.get("claim_id", "")).strip(): claim
+        for claim in claims
+        if str(claim.get("claim_id", "")).strip()
+    }
     query_rows_raw: list[dict[str, Any]] = []
 
     for chunk_index, chunk in enumerate(chunks, start=1):
@@ -125,7 +131,12 @@ def generate_validation_queries(
         raw_queries = payload.get("queries", [])
         if not isinstance(raw_queries, list):
             continue
-        normalized = normalize_query_rows(raw_queries, valid_claim_ids=valid_claim_ids)
+        normalized = normalize_query_rows(
+            raw_queries,
+            valid_claim_ids=valid_claim_ids,
+            run_id=run_id,
+            claim_rows_by_id=claim_rows_by_id,
+        )
         query_rows_raw.extend(normalized)
         emit(f"{query_model} query chunk {chunk_index}/{len(chunks)}: {len(normalized)} queries")
 
@@ -139,6 +150,6 @@ def generate_validation_queries(
     ]
     if missing_claims:
         emit(f"Adding fallback queries for {len(missing_claims)} uncovered claims.")
-        deduped_llm_queries.extend(generate_heuristic_queries(missing_claims))
+        deduped_llm_queries.extend(generate_heuristic_queries(missing_claims, run_id=run_id))
 
     return dedupe_queries(deduped_llm_queries)

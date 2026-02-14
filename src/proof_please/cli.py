@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import typer
 from rich.console import Console
@@ -166,6 +167,7 @@ def extract_claims_command(
         if missing_models:
             console.print(f"[yellow]Requested models not found in model list: {missing_models}[/yellow]")
 
+        run_id = f"run_{uuid4().hex[:12]}"
         all_rows = run_claim_extraction(
             transcript=transcript,
             model_list=model_list,
@@ -174,6 +176,7 @@ def extract_claims_command(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             on_status=_status,
+            run_id=run_id,
         )
     except (ValueError, FileNotFoundError, ConnectionError) as exc:
         raise _to_bad_parameter(exc) from exc
@@ -211,6 +214,7 @@ def generate_queries_command(
 
         claims = load_claims_jsonl(claims_input)
         console.print(f"[green]Loaded {len(claims)} claims from {claims_input}[/green]")
+        run_id = f"run_{uuid4().hex[:12]}"
         query_rows = run_query_generation(
             claims=claims,
             config=config,
@@ -220,6 +224,7 @@ def generate_queries_command(
             chunk_size=query_chunk_size,
             chunk_overlap=query_chunk_overlap,
             on_status=_status,
+            run_id=run_id,
         )
     except (ValueError, FileNotFoundError, ConnectionError) as exc:
         raise _to_bad_parameter(exc) from exc
@@ -263,6 +268,7 @@ def run_pipeline_command(
         if missing_models:
             console.print(f"[yellow]Requested models not found in model list: {missing_models}[/yellow]")
 
+        run_id = f"run_{uuid4().hex[:12]}"
         all_rows = run_claim_extraction(
             transcript=transcript,
             model_list=model_list,
@@ -271,6 +277,7 @@ def run_pipeline_command(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             on_status=_status,
+            run_id=run_id,
         )
         query_rows = run_query_generation(
             claims=all_rows,
@@ -281,6 +288,7 @@ def run_pipeline_command(
             chunk_size=query_chunk_size,
             chunk_overlap=query_chunk_overlap,
             on_status=_status,
+            run_id=run_id,
         )
     except (ValueError, FileNotFoundError, ConnectionError) as exc:
         raise _to_bad_parameter(exc) from exc
