@@ -54,6 +54,28 @@ uv run proof-please generate-queries --help
 uv run proof-please run-pipeline --help
 ```
 
+## Streamlit Data Explorer
+
+Use Streamlit to debug end-to-end links between transcript segments, extracted claims, and generated queries.
+
+```bash
+just explore-data
+# or
+uv run streamlit run src/proof_please/explorer/app.py
+```
+
+Default artifact paths used by the explorer:
+
+- Claims: `data/claims.jsonl`
+- Queries: `data/claim_queries.jsonl`
+- Transcript source: `data/transcripts/norm/`
+
+The app is organized into:
+
+- **Claims**: filter claims, inspect evidence, and preview linked queries.
+- **Queries**: inspect each query and jump back to its linked claim and transcript evidence.
+- **Diagnostics**: surface orphan query links, missing transcript documents, and missing `seg_id` references.
+
 Model backend flags:
 
 - Primary: `--backend-url`

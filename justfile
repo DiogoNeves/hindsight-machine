@@ -9,6 +9,9 @@ sync:
 run *args:
     uv run proof-please {{args}}
 
+explore-data *args:
+    uv run streamlit run src/proof_please/explorer/app.py {{args}}
+
 init-db:
     uv run proof-please init-db
 
