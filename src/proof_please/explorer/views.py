@@ -6,6 +6,7 @@ import html
 from collections import defaultdict
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from proof_please.explorer.data_access import ExplorerDataset
 from proof_please.explorer.linking import (
@@ -24,13 +25,12 @@ from proof_please.explorer.view_logic import (
     build_segment_to_claims_index,
     build_source_episode_index,
     build_source_summary,
-    default_claim_for_segment,
     episode_option_label,
     filter_episode_claim_rows,
     query_matches_filters,
     truncate_preview,
 )
-from proof_please.pipeline.models import TranscriptDocument, TranscriptSegment
+from proof_please.pipeline.models import TranscriptDocument
 
 
 def _render_text_card(text: str) -> None:
@@ -64,14 +64,6 @@ def _format_timestamp(seconds: int) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
-def _segment_option_label(segment: TranscriptSegment) -> str:
-    preview = truncate_preview(segment.text, limit=82)
-    return (
-        f"{segment.seg_id} | {_format_timestamp(segment.start_time_s)} | "
-        f"{segment.speaker or 'Unknown speaker'} | {preview}"
-    )
-
-
 def _sync_select_state(key: str, options: list[str]) -> None:
     if not options:
         st.session_state.pop(key, None)
@@ -93,12 +85,6 @@ def _sanitize_multiselect_state(key: str, options: list[str]) -> None:
 def _source_group_label(group: SourceGroup) -> str:
     suffix = "episode" if len(group.episode_doc_ids) == 1 else "episodes"
     return f"{group.source_label} ({len(group.episode_doc_ids)} {suffix})"
-
-
-def _episode_claim_row_label(row: EpisodeClaimRow) -> str:
-    speaker = row.speaker or "Unknown speaker"
-    preview = truncate_preview(row.claim_text)
-    return f"{row.claim_id} | {speaker} | {preview}"
 
 
 def _set_claim_debug_state(claim: ClaimRow) -> None:
@@ -132,41 +118,71 @@ def render_source_summary(
     top_speakers: tuple[str, ...],
 ) -> None:
     """Render a lightweight source-level summary."""
-    st.markdown("#### Source summary")
-    col1, col2 = st.columns(2)
-    col1.metric("Episodes", len(group.episode_doc_ids))
-    col2.metric("Claims", summary_claim_count)
-    col3, col4 = st.columns(2)
-    col3.metric("Queries", summary_query_count)
-    col4.metric("Top speakers", len(top_speakers))
-
-    if top_speakers:
-        st.caption(f"Top speakers: {', '.join(top_speakers)}")
-
-
-def render_episode_claim_overview(rows: list[EpisodeClaimRow]) -> None:
-    """Render compact claim overview table for selected episode."""
-    st.markdown("#### Episode claims")
-    if not rows:
-        st.info("No claims match the selected episode filters.")
-        return
-
-    table_rows = [
-        {
-            "claim_id": row.claim_id,
-            "speaker": row.speaker or "Unknown",
-            "type": row.claim_type,
-            "queries": row.query_count,
-            "claim_text": truncate_preview(row.claim_text, limit=86),
-        }
-        for row in rows
-    ]
-    st.dataframe(
-        table_rows,
-        use_container_width=True,
-        hide_index=True,
-        height=min(360, 46 + 34 * len(table_rows)),
+    speakers_text = ", ".join(top_speakers) if top_speakers else "none"
+    st.markdown(
+        (
+            "<p class='episode-summary'>"
+            f"Source <strong>{html.escape(group.source_label)}</strong> | "
+            f"{len(group.episode_doc_ids)} episode(s) | "
+            f"{summary_claim_count} claim(s) | {summary_query_count} query row(s) | "
+            f"Top speakers: {html.escape(speakers_text)}"
+            "</p>"
+        ),
+        unsafe_allow_html=True,
     )
+
+
+def _sync_optional_select_state(key: str, options: list[str]) -> None:
+    selected = st.session_state.get(key)
+    if selected in options:
+        return
+    st.session_state[key] = None
+
+
+def _episode_claim_context_label(row: EpisodeClaimRow) -> str:
+    boldness = row.boldness_rating or 0
+    speaker = row.speaker or "Unknown speaker"
+    preview = truncate_preview(row.claim_text, limit=70)
+    return f"{row.claim_id} · b{boldness} · {speaker} · {preview}"
+
+
+def _episode_claim_sample_card(row: EpisodeClaimRow) -> None:
+    boldness = row.boldness_rating or 0
+    speaker = row.speaker or "Unknown speaker"
+    claim_type = row.claim_type or "unknown"
+    query_count_label = "query" if row.query_count == 1 else "queries"
+    seg_text = row.first_seg_id or "no segment"
+    st.markdown(
+        (
+            "<article class='episode-claim-sample-card'>"
+            "<div class='episode-claim-sample-meta'>"
+            f"<span class='episode-chip'>{html.escape(row.claim_id)}</span>"
+            f"<span class='episode-chip'>b{boldness}</span>"
+            f"<span class='episode-chip'>{html.escape(speaker)}</span>"
+            f"<span class='episode-chip'>{html.escape(claim_type)}</span>"
+            f"<span class='episode-chip'>{row.query_count} {query_count_label}</span>"
+            f"<span class='episode-chip'>{html.escape(seg_text)}</span>"
+            "</div>"
+            f"<p class='episode-claim-sample-text'>{html.escape(truncate_preview(row.claim_text, limit=220))}</p>"
+            "</article>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _render_scroll_to_segment(seg_id: str) -> None:
+    safe_seg_id = html.escape(seg_id, quote=True)
+    script = f"""
+    <script>
+    (function() {{
+      const target = window.parent.document.querySelector('[data-segid="{safe_seg_id}"]');
+      if (target) {{
+        target.scrollIntoView({{ behavior: "smooth", block: "center" }});
+      }}
+    }})();
+    </script>
+    """
+    components.html(script, height=0, width=0)
 
 
 def render_transcript_with_highlights(
@@ -175,27 +191,29 @@ def render_transcript_with_highlights(
     highlighted_claim_counts: dict[str, int],
     active_seg_id: str,
     search_text: str,
-) -> None:
-    """Render the full transcript with claim-highlighted segment rows."""
+) -> str:
+    """Render transcript and return newly selected segment id, if any."""
     normalized_search = search_text.strip().lower()
-    for segment in document.segments:
-        claim_count = highlighted_claim_counts.get(segment.seg_id, 0)
-        classes = ["segment-row"]
-        if claim_count > 0:
-            classes.append("segment-row--claimed")
-        if segment.seg_id == active_seg_id:
-            classes.append("segment-row--active")
-        if normalized_search and normalized_search in segment.text.lower():
-            classes.append("segment-row--match")
+    selected_segment_id = ""
+    transcript_container = st.container(height=760)
+    with transcript_container:
+        for segment in document.segments:
+            claim_count = highlighted_claim_counts.get(segment.seg_id, 0)
+            classes = ["segment-row"]
+            if claim_count > 0:
+                classes.append("segment-row--claimed")
+            if segment.seg_id == active_seg_id and active_seg_id:
+                classes.append("segment-row--active")
+            if normalized_search and normalized_search in segment.text.lower():
+                classes.append("segment-row--match")
 
-        claim_badge = ""
-        if claim_count > 0:
-            suffix = "claim" if claim_count == 1 else "claims"
-            claim_badge = f"<span class='segment-badge'>{claim_count} {suffix}</span>"
+            claim_badge = ""
+            if claim_count > 0:
+                suffix = "claim" if claim_count == 1 else "claims"
+                claim_badge = f"<span class='segment-badge'>{claim_count} {suffix}</span>"
 
-        st.markdown(
-            (
-                f"<article class='{' '.join(classes)}'>"
+            segment_html = (
+                f"<article class='{' '.join(classes)}' data-segid='{html.escape(segment.seg_id)}'>"
                 "<div class='segment-row-meta'>"
                 f"<span class='segment-seg-id'>{html.escape(segment.seg_id)}</span>"
                 f"<span>{_format_timestamp(segment.start_time_s)}</span>"
@@ -204,94 +222,31 @@ def render_transcript_with_highlights(
                 "</div>"
                 f"<p class='segment-row-text'>{html.escape(segment.text)}</p>"
                 "</article>"
-            ),
-            unsafe_allow_html=True,
-        )
+            )
 
+            if claim_count > 0:
+                text_col, action_col = st.columns([0.92, 0.08], gap="small")
+                with text_col:
+                    st.markdown(segment_html, unsafe_allow_html=True)
+                with action_col:
+                    if st.button(
+                        "View",
+                        key=f"episode_pick_segment_{document.doc_id}_{segment.seg_id}",
+                        width="content",
+                    ):
+                        selected_segment_id = segment.seg_id
+            else:
+                st.markdown(segment_html, unsafe_allow_html=True)
 
-def render_segment_inspector(
-    *,
-    document: TranscriptDocument,
-    active_segment: TranscriptSegment,
-    linked_claims: list[ClaimRow],
-    hidden_claim_count: int,
-    queries_by_claim_id: dict[str, list[QueryRow]],
-) -> None:
-    """Render right-panel inspector for active transcript segment."""
-    st.markdown("### Segment inspector")
-    st.markdown(
-        (
-            "<div class='card-shell'>"
-            "<p class='meta-note'>"
-            f"{html.escape(active_segment.seg_id)} | {_format_timestamp(active_segment.start_time_s)} | "
-            f"{html.escape(active_segment.speaker or 'Unknown speaker')}"
-            "</p>"
-            f"<p class='claim-line'>{html.escape(active_segment.text)}</p>"
-            "</div>"
-        ),
-        unsafe_allow_html=True,
-    )
-
-    if not linked_claims:
-        st.info("No claim links for this segment under current filters.")
-        if hidden_claim_count > 0:
-            st.caption(f"{hidden_claim_count} claim link(s) hidden by the current filters.")
-        return
-
-    claim_ids = [claim.claim_id for claim in linked_claims]
-    default_claim = default_claim_for_segment(linked_claims)
-    if st.session_state.get("episode_active_claim_id") not in claim_ids:
-        st.session_state["episode_active_claim_id"] = (
-            default_claim.claim_id if default_claim else claim_ids[0]
-        )
-
-    claim_lookup = {claim.claim_id: claim for claim in linked_claims}
-    selected_claim_id = st.selectbox(
-        "Linked claims on this segment",
-        options=claim_ids,
-        format_func=lambda claim_id: _claim_label(claim_lookup[claim_id]),
-        key="episode_active_claim_id",
-    )
-    selected_claim = claim_lookup[selected_claim_id]
-
-    st.markdown("#### Claim detail")
-    _render_claim_card(selected_claim)
-
-    linked_queries = queries_by_claim_id.get(selected_claim.claim_id, [])
-    st.markdown("#### Linked queries")
-    st.caption(f"{len(linked_queries)} linked queries")
-    if not linked_queries:
-        st.info("No queries linked to this claim.")
-    for index, query in enumerate(linked_queries, start=1):
-        with st.expander(f"Query {index}: {query.query}", expanded=False):
-            if query.why_this_query:
-                st.write(query.why_this_query)
-            if query.preferred_sources:
-                st.caption(f"Preferred sources: {', '.join(query.preferred_sources)}")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button(
-            "Open in Claims debug",
-            key=f"open_claim_debug_{document.doc_id}_{selected_claim.claim_id}",
-            width="stretch",
-        ):
-            _set_claim_debug_state(selected_claim)
-            st.rerun()
-    with col2:
-        if st.button(
-            "Open in Queries debug",
-            key=f"open_query_debug_{document.doc_id}_{selected_claim.claim_id}",
-            width="stretch",
-        ):
-            _set_query_debug_state(selected_claim)
-            st.rerun()
+    return selected_segment_id
 
 
 def render_episode_browser(dataset: ExplorerDataset) -> None:
     """Render source/episode-first transcript browsing workflow."""
     st.markdown("## Episode Browser")
-    st.caption("Start from source and episode, browse transcript highlights, inspect linked claims and queries.")
+    st.caption(
+        "Start from an episode, read transcript highlights, and triage claims + queries from the right pane."
+    )
 
     if not dataset.transcripts_by_doc_id:
         st.info("No transcript documents loaded. Add transcript JSON files to browse episodes.")
@@ -311,21 +266,36 @@ def render_episode_browser(dataset: ExplorerDataset) -> None:
     source_keys = [group.source_key for group in source_groups]
     _sync_select_state("episode_source_key", source_keys)
     source_lookup = {group.source_key: group for group in source_groups}
+    current_source = source_lookup[st.session_state["episode_source_key"]]
+    _sync_select_state("episode_doc_id", list(current_source.episode_doc_ids))
 
-    selected_source_key = st.session_state["episode_source_key"]
-    selected_source = source_lookup[selected_source_key]
+    control1, control2, control3, control4, control5, control6 = st.columns([1.2, 1.6, 1.2, 1.2, 0.9, 1.4])
+    with control1:
+        st.selectbox(
+            "Source",
+            options=source_keys,
+            format_func=lambda source_key: _source_group_label(source_lookup[source_key]),
+            key="episode_source_key",
+        )
+
+    selected_source = source_lookup[st.session_state["episode_source_key"]]
     episode_doc_ids = list(selected_source.episode_doc_ids)
     _sync_select_state("episode_doc_id", episode_doc_ids)
 
+    with control2:
+        st.selectbox(
+            "Episode",
+            options=episode_doc_ids,
+            format_func=lambda doc_id: episode_option_label(episodes_by_doc_id[doc_id]),
+            key="episode_doc_id",
+        )
+
     selected_doc_id = st.session_state["episode_doc_id"]
     selected_document = dataset.transcripts_by_doc_id[selected_doc_id]
-
-    queries_by_claim_id = build_claims_to_queries_index(dataset.queries)
-    source_summary = build_source_summary(
-        selected_source.episode_doc_ids,
-        dataset.claims,
-        queries_by_claim_id,
-    )
+    if st.session_state.get("episode_context_doc_id") != selected_doc_id:
+        st.session_state["episode_context_doc_id"] = selected_doc_id
+        st.session_state["episode_active_seg_id"] = ""
+        st.session_state["episode_active_claim_id"] = None
 
     episode_rows = build_episode_claim_rows(
         selected_doc_id,
@@ -337,39 +307,44 @@ def render_episode_browser(dataset: ExplorerDataset) -> None:
     _sanitize_multiselect_state("episode_speaker_filter", speaker_options)
     _sanitize_multiselect_state("episode_claim_type_filter", claim_type_options)
 
-    left, center, right = st.columns([1.05, 1.5, 1.15], gap="large")
-
-    with left:
-        st.selectbox(
-            "Source",
-            options=source_keys,
-            format_func=lambda source_key: _source_group_label(source_lookup[source_key]),
-            key="episode_source_key",
+    with control3:
+        selected_speakers = st.multiselect(
+            "Speakers",
+            options=speaker_options,
+            key="episode_speaker_filter",
+        )
+    with control4:
+        selected_claim_types = st.multiselect(
+            "Claim types",
+            options=claim_type_options,
+            key="episode_claim_type_filter",
+        )
+    with control5:
+        only_with_queries = st.checkbox(
+            "Has queries",
+            value=False,
+            key="episode_only_with_queries",
+        )
+    with control6:
+        claim_search_text = st.text_input(
+            "Claim search",
+            key="episode_claim_search",
+            placeholder="claim text, id, speaker...",
         )
 
-        selected_source = source_lookup[st.session_state["episode_source_key"]]
-        episode_doc_ids = list(selected_source.episode_doc_ids)
-        _sync_select_state("episode_doc_id", episode_doc_ids)
-
-        st.selectbox(
-            "Episode",
-            options=episode_doc_ids,
-            format_func=lambda doc_id: episode_option_label(episodes_by_doc_id[doc_id]),
-            key="episode_doc_id",
+    search_col, summary_col = st.columns([1.5, 1.0])
+    with search_col:
+        transcript_search_text = st.text_input(
+            "Transcript search",
+            key="episode_transcript_search",
+            placeholder="search transcript text...",
         )
-
-        selected_doc_id = st.session_state["episode_doc_id"]
-        selected_document = dataset.transcripts_by_doc_id[selected_doc_id]
-        episode_rows = build_episode_claim_rows(
-            selected_doc_id,
+    with summary_col:
+        source_summary = build_source_summary(
+            selected_source.episode_doc_ids,
             dataset.claims,
             queries_by_claim_id,
         )
-        speaker_options = sorted({row.speaker for row in episode_rows if row.speaker})
-        claim_type_options = sorted({row.claim_type for row in episode_rows if row.claim_type})
-        _sanitize_multiselect_state("episode_speaker_filter", speaker_options)
-        _sanitize_multiselect_state("episode_claim_type_filter", claim_type_options)
-
         render_source_summary(
             selected_source,
             summary_claim_count=source_summary.claim_count,
@@ -377,57 +352,22 @@ def render_episode_browser(dataset: ExplorerDataset) -> None:
             top_speakers=source_summary.top_speakers,
         )
 
-        st.markdown("#### Claim filters")
-        selected_speakers = st.multiselect(
-            "Speakers",
-            options=speaker_options,
-            key="episode_speaker_filter",
-        )
-        selected_claim_types = st.multiselect(
-            "Claim types",
-            options=claim_type_options,
-            key="episode_claim_type_filter",
-        )
-        only_with_queries = st.checkbox(
-            "Only claims with linked queries",
-            value=False,
-            key="episode_only_with_queries",
-        )
-        claim_search_text = st.text_input(
-            "Search claims",
-            key="episode_claim_search",
-        )
+    filtered_rows = filter_episode_claim_rows(
+        episode_rows,
+        selected_speakers=selected_speakers,
+        selected_claim_types=selected_claim_types,
+        only_with_queries=only_with_queries,
+        search_text=claim_search_text,
+    )
+    st.caption(f"{len(filtered_rows)} filtered claim(s) in the selected episode.")
 
-        filtered_rows = filter_episode_claim_rows(
-            episode_rows,
-            selected_speakers=selected_speakers,
-            selected_claim_types=selected_claim_types,
-            only_with_queries=only_with_queries,
-            search_text=claim_search_text,
-        )
-        st.caption(f"Showing {len(filtered_rows)} of {len(episode_rows)} claims.")
-        render_episode_claim_overview(filtered_rows)
-
-        jump_rows = [row for row in filtered_rows if row.first_seg_id]
-        if jump_rows:
-            jump_claim_ids = [row.claim_id for row in jump_rows]
-            _sync_select_state("episode_jump_claim_id", jump_claim_ids)
-            jump_lookup = {row.claim_id: row for row in jump_rows}
-            st.selectbox(
-                "Jump to claim evidence",
-                options=jump_claim_ids,
-                format_func=lambda claim_id: _episode_claim_row_label(jump_lookup[claim_id]),
-                key="episode_jump_claim_id",
-            )
-            if st.button("Jump to evidence segment", key="episode_jump_to_claim_button", width="stretch"):
-                selected_jump = jump_lookup[st.session_state["episode_jump_claim_id"]]
-                st.session_state["episode_active_seg_id"] = selected_jump.first_seg_id
-                st.session_state["episode_active_claim_id"] = selected_jump.claim_id
-                st.rerun()
-        else:
-            st.caption("No claim jump targets available for the current filters.")
-
+    claim_lookup = {
+        claim.claim_id: claim
+        for claim in dataset.claims
+        if claim.doc_id == selected_doc_id
+    }
     filtered_claim_id_set = {row.claim_id for row in filtered_rows}
+
     segment_claims_for_doc: dict[str, list[ClaimRow]] = defaultdict(list)
     for (doc_id, seg_id), claim_rows in segment_to_claims.items():
         if doc_id != selected_doc_id:
@@ -438,77 +378,181 @@ def render_episode_browser(dataset: ExplorerDataset) -> None:
 
     segment_lookup = {segment.seg_id: segment for segment in selected_document.segments}
     segment_ids = list(segment_lookup.keys())
-    if not segment_ids:
-        with center:
-            st.info("Selected episode has no transcript segments.")
-        with right:
-            st.info("Select another episode to inspect linked claim evidence.")
-        return
+    if "episode_active_seg_id" not in st.session_state:
+        st.session_state["episode_active_seg_id"] = ""
+    if st.session_state["episode_active_seg_id"] not in segment_lookup:
+        st.session_state["episode_active_seg_id"] = ""
+    if "episode_active_claim_id" not in st.session_state:
+        st.session_state["episode_active_claim_id"] = None
 
-    _sync_select_state("episode_active_seg_id", segment_ids)
-    active_seg_id = st.session_state["episode_active_seg_id"]
-    active_segment = segment_lookup[active_seg_id]
+    left_pane, right_pane = st.columns([1.0, 1.0], gap="medium")
 
-    with center:
+    with left_pane:
         st.markdown("### Transcript")
-        transcript_search_text = st.text_input(
-            "Search transcript text",
-            key="episode_transcript_search",
+        st.caption("Highlighted text marks segments with linked claims. Click `View` to inspect linked claims.")
+
+        if not segment_ids:
+            st.info("Selected episode has no transcript segments.")
+        else:
+            picked_seg_id = render_transcript_with_highlights(
+                selected_document,
+                highlighted_claim_counts={
+                    seg_id: len(claim_rows)
+                    for seg_id, claim_rows in segment_claims_for_doc.items()
+                    if claim_rows
+                },
+                active_seg_id=st.session_state["episode_active_seg_id"],
+                search_text=transcript_search_text,
+            )
+            if picked_seg_id:
+                st.session_state["episode_active_seg_id"] = picked_seg_id
+                st.session_state["episode_active_claim_id"] = None
+                st.rerun()
+
+    with right_pane:
+        st.markdown("### Claims")
+        active_seg_id = st.session_state["episode_active_seg_id"]
+        linked_rows_for_segment = sorted(
+            [
+                row
+                for row in filtered_rows
+                if row.claim_id in {
+                    claim.claim_id for claim in segment_claims_for_doc.get(active_seg_id, [])
+                }
+            ],
+            key=lambda row: (-(row.boldness_rating or 0), row.claim_id),
         )
 
-        if transcript_search_text.strip():
-            matching_segment_ids = [
-                segment.seg_id
-                for segment in selected_document.segments
-                if transcript_search_text.strip().lower() in segment.text.lower()
-            ]
-            if matching_segment_ids:
-                _sync_select_state("episode_match_seg_id", matching_segment_ids)
-                st.selectbox(
-                    "Jump to text match",
-                    options=matching_segment_ids,
-                    format_func=lambda seg_id: _segment_option_label(segment_lookup[seg_id]),
-                    key="episode_match_seg_id",
-                )
-                if st.button("Go to match", key="episode_go_match", width="content"):
-                    st.session_state["episode_active_seg_id"] = st.session_state["episode_match_seg_id"]
-                    st.rerun()
-                st.caption(f"{len(matching_segment_ids)} matching segment(s).")
+        if active_seg_id and linked_rows_for_segment:
+            st.caption(
+                f"{len(linked_rows_for_segment)} claim(s) linked to selected segment `{active_seg_id}`."
+            )
+            claim_context_rows = linked_rows_for_segment
+        else:
+            claim_context_rows = sorted(
+                filtered_rows,
+                key=lambda row: (-(row.boldness_rating or 0), row.claim_id),
+            )
+            if active_seg_id:
+                st.info("No linked claims for selected segment under current filters. Showing claims by boldness.")
             else:
-                st.caption("No matching transcript segments found for the current search.")
+                st.caption("No transcript segment selected. Showing claims by boldness.")
 
-        st.selectbox(
-            "Active segment",
-            options=segment_ids,
-            format_func=lambda seg_id: _segment_option_label(segment_lookup[seg_id]),
-            key="episode_active_seg_id",
-        )
+        if not claim_context_rows:
+            st.info("No claims available for current filters.")
+            return
 
-        highlighted_claim_counts = {
-            seg_id: len(claim_rows)
-            for seg_id, claim_rows in segment_claims_for_doc.items()
-            if claim_rows
+        claim_context_lookup = {
+            row.claim_id: row
+            for row in claim_context_rows
         }
-        render_transcript_with_highlights(
-            selected_document,
-            highlighted_claim_counts=highlighted_claim_counts,
-            active_seg_id=st.session_state["episode_active_seg_id"],
-            search_text=transcript_search_text,
-        )
+        claim_context_ids = list(claim_context_lookup.keys())
+        _sync_optional_select_state("episode_active_claim_id", claim_context_ids)
 
-    all_linked_claims = segment_to_claims.get((selected_doc_id, active_segment.seg_id), [])
-    visible_linked_claims = [
-        row for row in all_linked_claims if row.claim_id in filtered_claim_id_set
-    ]
-    hidden_claim_count = len(all_linked_claims) - len(visible_linked_claims)
-    with right:
-        render_segment_inspector(
-            document=selected_document,
-            active_segment=active_segment,
-            linked_claims=visible_linked_claims,
-            hidden_claim_count=hidden_claim_count,
-            queries_by_claim_id=queries_by_claim_id,
+        sample_rows = claim_context_rows[:5]
+        st.caption("Claim sample")
+        for row in sample_rows:
+            card_col, action_col = st.columns([0.84, 0.16], gap="small")
+            with card_col:
+                _episode_claim_sample_card(row)
+            with action_col:
+                if st.button(
+                    "Inspect",
+                    key=f"episode_claim_sample_{selected_doc_id}_{row.claim_id}",
+                    width="stretch",
+                ):
+                    st.session_state["episode_active_claim_id"] = row.claim_id
+                    if row.first_seg_id:
+                        st.session_state["episode_active_seg_id"] = row.first_seg_id
+                        st.session_state["episode_scroll_target_seg_id"] = row.first_seg_id
+                    st.rerun()
+
+        claim_picker_search = st.text_input(
+            "Find claim",
+            key="episode_claim_picker_search",
+            placeholder="search claim id, speaker, text...",
+        ).strip().lower()
+        picker_ids = [
+            row.claim_id
+            for row in claim_context_rows
+            if (
+                not claim_picker_search
+                or claim_picker_search in row.claim_id.lower()
+                or claim_picker_search in (row.speaker or "").lower()
+                or claim_picker_search in row.claim_text.lower()
+            )
+        ]
+        if not picker_ids:
+            st.caption("No matches for claim search; showing full list.")
+            picker_ids = claim_context_ids
+
+        selected_claim_id = st.selectbox(
+            "Claim list",
+            options=picker_ids,
+            format_func=lambda claim_id: _episode_claim_context_label(claim_context_lookup[claim_id]),
+            key="episode_active_claim_id",
+            index=None,
+            placeholder="Select a claim...",
         )
+        if not selected_claim_id:
+            st.caption("Select a claim to inspect details and linked queries.")
+            return
+
+        selected_row = claim_context_lookup[selected_claim_id]
+        target_seg_id = selected_row.first_seg_id
+        if target_seg_id and target_seg_id != st.session_state["episode_active_seg_id"]:
+            st.session_state["episode_active_seg_id"] = target_seg_id
+            st.session_state["episode_scroll_target_seg_id"] = target_seg_id
+            st.rerun()
+
+        selected_claim = claim_lookup.get(selected_claim_id)
+        if selected_claim is None:
+            st.error("Selected claim is no longer available in the current episode context.")
+            return
+
+        st.markdown("#### Selected claim")
+        _render_claim_card(selected_claim)
+
+        linked_queries = queries_by_claim_id.get(selected_claim.claim_id, [])
+        st.markdown("#### Queries")
+        if not linked_queries:
+            st.info("No queries linked to this claim.")
+        else:
+            for index, query in enumerate(linked_queries, start=1):
+                st.markdown(
+                    (
+                        "<article class='query-card'>"
+                        f"<p class='query-card-title'>Query {index}</p>"
+                        f"<p class='query-card-text'>{html.escape(query.query)}</p>"
+                        f"<p class='query-card-note'>{html.escape(query.why_this_query or 'No rationale provided.')}</p>"
+                        "</article>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+                if query.preferred_sources:
+                    st.caption(f"Preferred sources: {', '.join(query.preferred_sources)}")
+
+        debug_col1, debug_col2 = st.columns(2)
+        with debug_col1:
+            if st.button(
+                "Open Claims debug",
+                key=f"open_claim_debug_{selected_claim.claim_id}",
+                width="stretch",
+            ):
+                _set_claim_debug_state(selected_claim)
+                st.rerun()
+        with debug_col2:
+            if st.button(
+                "Open Queries debug",
+                key=f"open_query_debug_{selected_claim.claim_id}",
+                width="stretch",
+            ):
+                _set_query_debug_state(selected_claim)
+                st.rerun()
+
+    scroll_target = st.session_state.pop("episode_scroll_target_seg_id", "")
+    if scroll_target:
+        _render_scroll_to_segment(scroll_target)
 
 
 def render_hero(diagnostics: LinkDiagnostics) -> None:
@@ -529,19 +573,37 @@ def render_hero(diagnostics: LinkDiagnostics) -> None:
 
 
 def _render_claim_card(claim: ClaimRow) -> None:
-    _render_text_card(claim.claim_text)
     time_start = claim.time_range_s.get("start")
     time_end = claim.time_range_s.get("end")
-    time_text = ""
     if time_start is not None and time_end is not None:
-        time_text = f" | range {time_start}s-{time_end}s"
+        time_text = f"{_format_timestamp(time_start)}-{_format_timestamp(time_end)}"
     elif time_start is not None:
-        time_text = f" | start {time_start}s"
-    st.caption(
+        time_text = _format_timestamp(time_start)
+    else:
+        time_text = "unknown"
+
+    evidence_count = len(claim.evidence)
+    evidence_label = "segment" if evidence_count == 1 else "segments"
+    boldness = claim.boldness_rating if claim.boldness_rating is not None else "n/a"
+    st.markdown(
         (
-            f"`{claim.claim_id}` | doc `{claim.doc_id}` | speaker `{claim.speaker or 'unknown'}`"
-            f" | type `{claim.claim_type}` | model `{claim.model or 'unknown'}`{time_text}"
-        )
+            "<article class='claim-detail-card'>"
+            "<div class='claim-detail-header'>"
+            f"<span class='claim-detail-id'>{html.escape(claim.claim_id)}</span>"
+            f"<span class='claim-detail-pill'>Boldness {boldness}</span>"
+            f"<span class='claim-detail-pill'>{html.escape(claim.claim_type or 'unknown')}</span>"
+            f"<span class='claim-detail-pill'>{html.escape(claim.speaker or 'Unknown speaker')}</span>"
+            "</div>"
+            f"<p class='claim-detail-text'>{html.escape(claim.claim_text)}</p>"
+            "<div class='claim-detail-footer'>"
+            f"<span>Doc: {html.escape(claim.doc_id)}</span>"
+            f"<span>Model: {html.escape(claim.model or 'unknown')}</span>"
+            f"<span>Time: {html.escape(time_text)}</span>"
+            f"<span>Evidence: {evidence_count} {evidence_label}</span>"
+            "</div>"
+            "</article>"
+        ),
+        unsafe_allow_html=True,
     )
 
 
@@ -775,7 +837,7 @@ def _render_issues(title: str, rows: list[dict[str, str]], empty_message: str) -
         if not rows:
             st.success(empty_message)
             return
-        st.dataframe(rows, use_container_width=True)
+        st.dataframe(rows, width="stretch")
 
 
 def render_diagnostics_tab(dataset: ExplorerDataset, diagnostics: LinkDiagnostics) -> None:
