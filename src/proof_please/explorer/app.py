@@ -12,6 +12,7 @@ from proof_please.explorer.styles import APP_STYLE
 from proof_please.explorer.views import (
     render_claims_tab,
     render_diagnostics_tab,
+    render_episode_browser,
     render_hero,
     render_queries_tab,
 )
@@ -52,7 +53,7 @@ def main() -> None:
             "Transcript JSON or directory",
             value=DEFAULT_TRANSCRIPTS_PATH,
         )
-        if st.button("Reload from disk", use_container_width=True):
+        if st.button("Reload from disk", width="stretch"):
             _load_dataset_cached.clear()
         st.caption("Paths are resolved from the current working directory.")
 
@@ -68,14 +69,38 @@ def main() -> None:
         transcripts_by_doc_id=dataset.transcripts_by_doc_id,
     )
 
-    render_hero(diagnostics)
-    tab_claims, tab_queries, tab_diagnostics = st.tabs(["Claims", "Queries", "Diagnostics"])
+    if "pp_mode" not in st.session_state:
+        st.session_state["pp_mode"] = "Episode Browser"
 
-    with tab_claims:
+    st.markdown("### Explorer Mode")
+    mode = st.radio(
+        "Explorer Mode",
+        options=["Episode Browser", "Debug Mode"],
+        key="pp_mode",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    if mode == "Episode Browser":
+        render_episode_browser(dataset)
+        return
+
+    render_hero(diagnostics)
+    debug_sections = ["Claims", "Queries", "Diagnostics"]
+    if st.session_state.get("pp_debug_section") not in debug_sections:
+        st.session_state["pp_debug_section"] = debug_sections[0]
+
+    debug_section = st.radio(
+        "Debug workflow",
+        options=debug_sections,
+        key="pp_debug_section",
+        horizontal=True,
+    )
+    if debug_section == "Claims":
         render_claims_tab(dataset)
-    with tab_queries:
+    elif debug_section == "Queries":
         render_queries_tab(dataset)
-    with tab_diagnostics:
+    else:
         render_diagnostics_tab(dataset, diagnostics)
 
 

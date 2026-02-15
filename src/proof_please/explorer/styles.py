@@ -157,6 +157,67 @@ h1, h2, h3 {
     color: var(--pp-ink) !important;
 }
 
+.segment-row {
+    background: rgba(255, 255, 255, 0.82);
+    border: 1px solid #e7dbc8;
+    border-radius: 12px;
+    padding: 0.7rem 0.85rem;
+    margin-bottom: 0.45rem;
+    transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.segment-row--claimed {
+    border-left: 4px solid rgba(31, 111, 88, 0.62);
+}
+
+.segment-row--active {
+    border-color: rgba(31, 111, 88, 0.92);
+    box-shadow: 0 8px 18px rgba(26, 49, 43, 0.1);
+    transform: translateY(-1px);
+}
+
+.segment-row--match {
+    background: linear-gradient(
+        120deg,
+        rgba(248, 243, 231, 0.92),
+        rgba(228, 241, 236, 0.9)
+    );
+}
+
+.segment-row-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.42rem;
+    margin-bottom: 0.3rem;
+    font-size: 0.78rem;
+    color: var(--pp-ink-soft);
+    font-family: 'IBM Plex Mono', monospace;
+}
+
+.segment-seg-id {
+    font-weight: 600;
+    color: var(--pp-ink-muted);
+}
+
+.segment-badge {
+    margin-left: auto;
+    background: rgba(31, 111, 88, 0.15);
+    color: #205a48;
+    border: 1px solid rgba(31, 111, 88, 0.3);
+    border-radius: 999px;
+    padding: 0.1rem 0.46rem;
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+
+.segment-row-text {
+    margin: 0;
+    color: var(--pp-ink);
+    line-height: 1.45;
+}
+
 @keyframes riseIn {
     from {
         opacity: 0;
@@ -174,6 +235,15 @@ h1, h2, h3 {
     }
     .claim-line {
         font-size: 0.96rem;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .hero,
+    .card-shell,
+    .segment-row {
+        animation: none !important;
+        transition: none !important;
     }
 }
 </style>
