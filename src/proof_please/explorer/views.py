@@ -14,20 +14,32 @@ from proof_please.explorer.linking import (
     resolve_claim_evidence,
 )
 from proof_please.explorer.models import ClaimRow, QueryRow
+from proof_please.explorer.view_logic import (
+    claim_matches_filters,
+    query_matches_filters,
+    truncate_preview,
+)
+
+
+def _render_text_card(text: str) -> None:
+    st.markdown(
+        (
+            "<div class='card-shell'>"
+            f"<p class='claim-line'>{html.escape(text)}</p>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 def _claim_label(claim: ClaimRow) -> str:
-    preview = claim.claim_text
-    if len(preview) > 96:
-        preview = f"{preview[:93].rstrip()}..."
+    preview = truncate_preview(claim.claim_text)
     speaker = claim.speaker or "Unknown speaker"
     return f"{claim.claim_id} | {speaker} | {preview}"
 
 
 def _query_label(query: QueryRow) -> str:
-    preview = query.query
-    if len(preview) > 96:
-        preview = f"{preview[:93].rstrip()}..."
+    preview = truncate_preview(query.query)
     return f"{query.claim_id} | {preview}"
 
 
@@ -49,14 +61,7 @@ def render_hero(diagnostics: LinkDiagnostics) -> None:
 
 
 def _render_claim_card(claim: ClaimRow) -> None:
-    st.markdown(
-        (
-            "<div class='card-shell'>"
-            f"<p class='claim-line'>{html.escape(claim.claim_text)}</p>"
-            "</div>"
-        ),
-        unsafe_allow_html=True,
-    )
+    _render_text_card(claim.claim_text)
     time_start = claim.time_range_s.get("start")
     time_end = claim.time_range_s.get("end")
     time_text = ""
@@ -133,25 +138,20 @@ def render_claims_tab(dataset: ExplorerDataset) -> None:
         )
 
     search_text = search_text.strip().lower()
-    filtered_claims: list[ClaimRow] = []
-    for claim in claims:
-        if selected_doc != "All" and claim.doc_id != selected_doc:
-            continue
-        if selected_speakers and claim.speaker not in selected_speakers:
-            continue
-        if selected_claim_types and claim.claim_type not in selected_claim_types:
-            continue
-        if selected_models and claim.model not in selected_models:
-            continue
-        if only_with_queries and claim.claim_id not in queries_by_claim_id:
-            continue
-        if search_text:
-            haystack = " ".join(
-                [claim.claim_id, claim.doc_id, claim.speaker, claim.claim_type, claim.claim_text]
-            ).lower()
-            if search_text not in haystack:
-                continue
-        filtered_claims.append(claim)
+    filtered_claims = [
+        claim
+        for claim in claims
+        if claim_matches_filters(
+            claim,
+            selected_doc=selected_doc,
+            selected_speakers=selected_speakers,
+            selected_claim_types=selected_claim_types,
+            selected_models=selected_models,
+            only_with_queries=only_with_queries,
+            queries_by_claim_id=queries_by_claim_id,
+            search_text=search_text,
+        )
+    ]
 
     st.caption(f"Showing {len(filtered_claims)} of {len(claims)} claims.")
     if not filtered_claims:
@@ -235,22 +235,18 @@ def render_queries_tab(dataset: ExplorerDataset) -> None:
 
     selected_source_set = set(selected_sources)
     search_text = search_text.strip().lower()
-    filtered_queries: list[QueryRow] = []
-    for query in queries:
-        linked_claim = claim_index.get(query.claim_id)
-        if only_orphans and linked_claim is not None:
-            continue
-        if selected_claim_types:
-            if linked_claim is None or linked_claim.claim_type not in selected_claim_types:
-                continue
-        if selected_source_set and not selected_source_set.intersection(query.preferred_sources):
-            continue
-        if search_text:
-            claim_text = linked_claim.claim_text if linked_claim else ""
-            haystack = " ".join([query.query, query.why_this_query, claim_text]).lower()
-            if search_text not in haystack:
-                continue
-        filtered_queries.append(query)
+    filtered_queries = [
+        query
+        for query in queries
+        if query_matches_filters(
+            query,
+            linked_claim=claim_index.get(query.claim_id),
+            selected_claim_types=selected_claim_types,
+            selected_source_set=selected_source_set,
+            only_orphans=only_orphans,
+            search_text=search_text,
+        )
+    ]
 
     st.caption(f"Showing {len(filtered_queries)} of {len(queries)} queries.")
     if not filtered_queries:
@@ -269,14 +265,7 @@ def render_queries_tab(dataset: ExplorerDataset) -> None:
     left, right = st.columns([1.05, 1.2], gap="large")
     with left:
         st.markdown("#### Query detail")
-        st.markdown(
-            (
-                "<div class='card-shell'>"
-                f"<p class='claim-line'>{html.escape(selected_query.query)}</p>"
-                "</div>"
-            ),
-            unsafe_allow_html=True,
-        )
+        _render_text_card(selected_query.query)
         st.caption(f"Linked claim id: `{selected_query.claim_id}`")
         if selected_query.why_this_query:
             st.write(selected_query.why_this_query)
