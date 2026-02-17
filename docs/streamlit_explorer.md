@@ -17,6 +17,12 @@ The app is meant to support:
 - fast navigation between transcript segments, claims, and generated queries
 - deterministic inspection when artifacts are incomplete or noisy
 
+## Role in the Broader Roadmap
+
+The current Streamlit app is an interim inspection tool while ingestion and extraction quality are still being tuned. Its immediate value is helping calibrate prompts and normalization logic by making errors in claim extraction, claim clustering, and transcript linkage obvious during manual review.
+
+As ingestion scales to many podcasts, this app should continue to function as a QA/debug surface even if a different end-user UI is adopted later.
+
 ## Run Locally
 
 ```bash

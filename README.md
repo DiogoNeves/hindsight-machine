@@ -19,6 +19,12 @@ The core idea is simple: extract concrete claims from transcript text, query sci
   - `uv run proof-please extract-claims ...`
 - Local DuckDB schema bootstrap in `data/proof_please.duckdb`.
 
+## Product Direction (Working)
+
+Near term, this project aims to ingest many podcast episodes, extract health claims at scale, reduce duplicate/overlapping claims into a smaller set of high-value validation queries, and prioritize the boldest claims for faster review. The goal is to compare scientific consensus across speakers and podcasts, not just inspect one episode at a time.
+
+Streamlit is currently an intermediate verification surface, not the final product UI. It exists to audit transcript -> claim -> query link quality, speed up manual review loops, and improve extraction/query prompts before moving to a more production-grade interface.
+
 ## Documentation
 
 - `docs/README.md`: docs index
