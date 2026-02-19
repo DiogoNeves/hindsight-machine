@@ -125,7 +125,8 @@ def generate_validation_queries(
         try:
             payload = extract_json_object(response_text)
         except ValueError as exc:
-            emit(f"Invalid query JSON for chunk {chunk_index}/{len(chunks)}: {exc}")
+            snippet = response_text[:240].replace("\n", " ")
+            emit(f"Invalid query JSON for chunk {chunk_index}/{len(chunks)}: {exc} (snippet: {snippet!r})")
             continue
 
         raw_queries = payload.get("queries", [])

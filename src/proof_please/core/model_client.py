@@ -90,14 +90,22 @@ def _extract_chat_content(payload: dict[str, Any]) -> str:
             message = first_choice.get("message", {})
             if isinstance(message, dict):
                 content = message.get("content")
-                if isinstance(content, str):
+                if isinstance(content, str) and content.strip():
                     return content
 
     message = payload.get("message")
     if isinstance(message, dict):
         content = message.get("content")
-        if isinstance(content, str):
+        if isinstance(content, str) and content.strip():
             return content
+
+    top_level_content = payload.get("response")
+    if isinstance(top_level_content, str) and top_level_content.strip():
+        return top_level_content
+
+    top_level_text = payload.get("text")
+    if isinstance(top_level_text, str) and top_level_text.strip():
+        return top_level_text
 
     raise ValueError("Model backend response missing message content.")
 

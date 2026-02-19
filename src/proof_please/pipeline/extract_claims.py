@@ -42,16 +42,21 @@ def build_prompt(doc_id: str, segment_block: str, chunk_label: str) -> list[dict
         f"Document ID: {doc_id}\n\n"
         f"Chunk: {chunk_label}\n\n"
         "Task:\n"
-        "1) Extract as many distinct factual health claims as possible from the transcript snippets below.\n"
-        "2) Use claim_type from this set only: medical_risk, treatment_effect, nutrition_claim, "
+        "1) Extract as many distinct health claims as possible from the transcript snippets below.\n"
+        "2) A claim must be either:\n"
+        "   - factual health/medical information presented as generally true, or\n"
+        "   - advice/recommendation intended to change listener behavior.\n"
+        "3) Exclude purely personal anecdotes about the speaker's own experience unless they are clearly "
+        "generalized to others or used as advice.\n"
+        "4) Use claim_type from this set only: medical_risk, treatment_effect, nutrition_claim, "
         "exercise_claim, epidemiology, other.\n"
-        "3) Each claim must include at least one evidence item with an exact seg_id and quote.\n"
-        "4) time_range_s.start and end must be integer seconds; derive from evidence segment starts.\n"
-        "5) Add boldness_rating on a 1-3 scale for how bold/surprising the claim is:\n"
+        "5) Each claim must include at least one evidence item with an exact seg_id and quote.\n"
+        "6) time_range_s.start and end must be integer seconds; derive from evidence segment starts.\n"
+        "7) Add boldness_rating on a 1-3 scale for how bold/surprising the claim is:\n"
         "   1 = common/unsurprising mainstream statement\n"
         "   2 = moderately strong or somewhat surprising statement\n"
         "   3 = very bold, counter-intuitive, or highly surprising statement\n"
-        "6) Prefer recall over precision: include explicit claims about risk, causality, effects, "
+        "8) Prefer recall over precision: include explicit claims about risk, causality, effects, "
         "recommendations, prevalence, biomarkers, or dose-response.\n\n"
         "Transcript segments:\n"
         f"{segment_block}\n"
@@ -108,7 +113,11 @@ def extract_claims_for_models(
             try:
                 payload = extract_json_object(response_text)
             except ValueError as exc:
-                emit(f"Could not parse JSON response for {model}, chunk {chunk_index}: {exc}")
+                snippet = response_text[:240].replace("\n", " ")
+                emit(
+                    "Could not parse JSON response for "
+                    f"{model}, chunk {chunk_index}: {exc} (snippet: {snippet!r})"
+                )
                 continue
 
             claims = payload.get("claims", [])

@@ -267,6 +267,11 @@ def run_pipeline_command(
         missing_models = find_missing_models(model_list, available_models)
         if missing_models:
             console.print(f"[yellow]Requested models not found in model list: {missing_models}[/yellow]")
+            model_list = [model for model in model_list if model not in missing_models]
+            if not model_list:
+                raise ValueError(
+                    "None of the requested models are available. Update --models or install one locally."
+                )
 
         run_id = f"run_{uuid4().hex[:12]}"
         all_rows = run_claim_extraction(
